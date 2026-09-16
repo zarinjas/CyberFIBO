@@ -1,24 +1,24 @@
 # CyberFIBO — perintah pembangunan / deploy
 # Guna: make <target>
-.PHONY: help test test-verbose ctl status why sim syntax install-control uninstall-control health
+# Verifikasi sebenar ada dalam tools/check.py supaya ia jalan di Windows juga
+# (di mana `make` mungkin tiada):  python tools/check.py
+.PHONY: help check test test-verbose syntax ctl status why sim install-control uninstall-control health
 
 help:
-	@echo "make test              - jalankan suite kanonik (bot/tests)"
-	@echo "make syntax            - semak sintaks semua fail python"
+	@echo "make check             - SEMUA verifikasi (sintaks + pytest + paparan)"
+	@echo "make test              - alias untuk check"
+	@echo "make test-verbose      - pytest dengan butiran"
 	@echo "make ctl ARGS=status   - jalankan traderctl dari repo"
 	@echo "make sim               - tulis state tiruan (uji UI tanpa MT5)"
 	@echo "make install-control   - pasang traderctl + unit systemd + .env"
 	@echo "make uninstall-control - buang unit + traderctl"
 	@echo "make health            - sahkan aplikasi lain tidak tergugat"
 
-test:
-	cd bot && python -m pytest -q
+check test syntax:
+	python tools/check.py
 
 test-verbose:
 	cd bot && python -m pytest -v
-
-syntax:
-	python -c "import ast,glob;[ast.parse(open(f,encoding='utf-8').read()) for f in glob.glob('bot/*.py')+glob.glob('control/*.py')+['control/traderctl']+glob.glob('studies/*.py')];print('syntax OK')"
 
 ctl:
 	python control/traderctl $(ARGS)
