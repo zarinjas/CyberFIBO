@@ -1,0 +1,34 @@
+# secrets — JANGAN commit
+.env
+*.env
+!.env.example
+state/
+logs/
+events.jsonl
+*.log
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# wine / MT5 artifacts
+wineprefix/
+*.exe
+*.msi
+*.chr
+
+# runtime arm state
+ab_*.json
+control.json
+brokers.json
+
+# editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

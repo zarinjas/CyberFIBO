@@ -1,0 +1,480 @@
+#!/usr/bin/env python3
+"""traderctl - single source of truth for the MT5 scalper control plane.
+
+One file, stdlib only (python3.14 has no pip here). Subcommands:
+
+    traderctl status      full picture: account, arms, open trades
+    traderctl next        what the bots are waiting for right now
+    traderctl trades      open positions only
+    traderctl why         why no trade - per-arm last decision + reason
+    traderctl pause       stop opening new legs (control.json paused=true)
+    traderctl resume      allow entries again
+    traderctl skip        mark the current group spent, hunt the next one
+    traderctl closeall    flatten every leg the bots own
+    traderctl sim         write a synthetic state so the UI can be tested
+    traderctl bot         run the Telegram button bot (long poll)
+    traderctl notify      tail events.jsonl -> Telegram
+
+STATE CONTRACT (what the trading bot must write - see README in this dir):
+    state/arms.json    account + per-arm status + open positions
+    state/control.json {"paused":bool,"skip":bool,"close_all":bool}
+    events.jsonl       one json per line: {"ts":..,"kind":"entry",
+                       "text":"..."} -> pushed to Telegram by `notify`
+"""
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+ROOT = pathlib.Path(os.environ.get("TRADER_ROOT", "/opt/trading"))
+STATE = ROOT / "state"
+ARMS = STATE / "arms.json"
+CONTROL = STATE / "control.json"
+EVENTS = ROOT / "events.jsonl"
+ENVF = ROOT / ".env"
+BROKERS = STATE / "brokers.json"
+LOGIN_SH = ROOT / "bin" / "mt5_login.sh"
+
+
+def env():
+    d = {}
+    if ENVF.exists():
+        for line in ENVF.read_text().splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=", 1)
+                d[k.strip()] = v.strip()
+    return d
+
+
+def write_control(**kw):
+    cur = {}
+    if CONTROL.exists():
+        try:
+            cur = json.loads(CONTROL.read_text())
+        except Exception:
+            cur = {}
+    cur.update(kw)
+    cur["updated"] = int(time.time())
+    CONTROL.parent.mkdir(parents=True, exist_ok=True)
+    CONTROL.write_text(json.dumps(cur, indent=2))
+    return cur
+
+
+def load():
+    if not ARMS.exists():
+        return None
+    try:
+        return json.loads(ARMS.read_text())
+    except Exception:
+        return None
+
+
+def fmt_money(x):
+    return ("%+.2f" % x) if isinstance(x, (int, float)) else str(x)
+
+
+def cmd_status():
+    d = load()
+    if not d:
+        print("STATUS: tiada state - bot belum menulis state/arms.json")
+        print("        (Fasa 3 belum siap, atau bot tidak berjalan)")
+        return
+    c = d.get("control", {})
+    print("═" * 46)
+    print("  STATUS MT5 SCALPER")
+    print("═" * 46)
+    print("  masa     : %s" % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+    print("  keadaan  : %s" % ("⏸ PAUSE" if c.get("paused") else "▶️ JALAN"))
+    print("  balance  : %s USC" % d.get("balance"))
+    print("  equity   : %s USC" % d.get("equity"))
+    print("  floating : %s USC" % fmt_money(d.get("floating", 0)))
+    print("  posisi   : %d" % len(d.get("positions", [])))
+    print()
+    for a in d.get("arms", []):
+        print("  [%s] %-4s magic=%-5s tf=%-3s  %s" % (
+            a.get("state", "?"), a.get("name", "?"), a.get("magic", "?"),
+            a.get("tf", "?"), a.get("action", "")))
+
+
+def cmd_next():
+    d = load()
+    if not d:
+        print("NEXT: tiada state (bot belum jalan)")
+        return
+    print("═" * 46)
+    print("  SETUP SETERUSNYA - apa yang ditunggu")
+    print("═" * 46)
+    for a in d.get("arms", []):
+        print("\n  [%s] fibo %s" % (a.get("name", "?"), a.get("tf", "?")))
+        print("    group   : %s" % a.get("group", "-"))
+        print("    0.0/100 : %s" % a.get("levels", "-"))
+        print("    harga   : %s" % a.get("price", "-"))
+        print("    zon     : %s" % a.get("zone", "-"))
+        print("    status  : %s" % a.get("action", "-"))
+        print("    sebab   : %s" % a.get("reason", "-"))
+    n = d.get("next_event")
+    if n:
+        print("\n  anggaran : %s" % n)
+
+
+def cmd_trades():
+    d = load()
+    if not d:
+        print("TRADES: tiada state")
+        return
+    ps = d.get("positions", [])
+    if not ps:
+        print("  TIADA posisi terbuka")
+        return
+    print("  %-4s %-10s %-5s %6s %10s %10s %10s %9s" %
+          ("arm", "ticket", "side", "lot", "masuk", "SL", "TP", "profit"))
+    for p in ps:
+        print("  %-4s %-10s %-5s %6s %10s %10s %10s %9s" % (
+            p.get("arm", "?"), p.get("ticket", "?"), p.get("side", "?"),
+            p.get("lot", "?"), p.get("entry", "?"), p.get("sl", "?"),
+            p.get("tp", "?"), fmt_money(p.get("profit", 0))))
+    print("\n  jumlah floating: %s USC" % fmt_money(d.get("floating", 0)))
+
+
+def cmd_why():
+    d = load()
+    if not d:
+        print("WHY: tiada state - tiada apa untuk dijelaskan")
+        return
+    c = d.get("control", {})
+    print("═" * 46)
+    print("  KENAPA TIADA TRADE")
+    print("═" * 46)
+    if c.get("paused"):
+        print("  → BOT DIPAUSE (arahan dari Telegram)")
+        return
+    if d.get("positions"):
+        print("  → sudah ada %d posisi terbuka - tunggu ia selesai" % len(d["positions"]))
+    blocked = [a for a in d.get("arms", []) if a.get("reason")]
+    if not blocked:
+        print("  → tiada sebab direkod (bot mungkin baharu mula)")
+        return
+    for a in blocked:
+        print("  [%s] %s" % (a.get("name", "?"), a.get("reason")))
+
+
+def cmd_sim():
+    """Write a plausible state + events so the button UI can be proven end-to-end
+    before MT5 exists. Clearly marked as synthetic."""
+    now = int(time.time())
+    write_control(paused=False)
+    ARMS.write_text(json.dumps({
+        "synthetic": True,
+        "updated": now,
+        "balance": 11799.62, "equity": 12101.10, "floating": 301.48,
+        "positions": [
+            {"arm": "H", "ticket": 48891909, "side": "BUY", "lot": 0.84,
+             "entry": 4330.45, "sl": 4321.76, "tp": 4334.36, "profit": 301.48},
+        ],
+        "arms": [
+            {"name": "H", "magic": 9117, "tf": "H1", "state": "▶", "action": "1 posisi terbuka",
+             "reason": "menunggu TP 100.0 atau money-TP",
+             "group": "09-16 10:30 x5", "levels": "0.0=4323.76 100.0=4334.36",
+             "price": "4330.89", "zone": "lvl 49.2% (0-50%)"},
+            {"name": "J", "magic": 9119, "tf": "H1", "state": "…", "action": "menunggu setup",
+             "reason": "harga LUAR zon - perlu turun 12pt ke 4310.20",
+             "group": "09-16 11:30 x16", "levels": "0.0=4349.56 100.0=4329.62",
+             "price": "4331.90", "zone": "lvl 12.6% (0-50%)"},
+            {"name": "L", "magic": 9121, "tf": "M15", "state": "…", "action": "menunggu setup",
+             "reason": "tapis TREND menolak - fade ini lawan arah M15",
+             "group": "09-16 13:40 x3", "levels": "0.0=4338.10 100.0=4326.55",
+             "price": "4331.90", "zone": "lvl 39% (0-50%)"},
+        ],
+        "next_event": "setup seterusnya biasanya ~1-2 kali sehari (tapis trend + breakout)",
+    }, indent=2))
+    for i, t in enumerate([
+        "SIM: state tiruan ditulis (bukan trade sebenar)",
+        "SETUP SELL group 09-16 11:30 x16 0.0=4349.56 100.0=4329.62 lvl 3.5% risk 546pt lot 1.64",
+        "SENT SELL 1.64 @ 4333.10 SL 4351.56 TP 4329.87 ticket=4889xxxx",
+    ]):
+        with EVENTS.open("a") as f:
+            f.write(json.dumps({"ts": now + i, "kind": "sim", "text": t}) + "\n")
+    print("state tiruan ditulis -> %s" % ARMS)
+    print("cuba: traderctl status ; traderctl why ; traderctl next")
+
+
+def api(tok, method, **params):
+    url = "https://api.telegram.org/bot%s/%s" % (tok, method)
+    data = urllib.parse.urlencode(params).encode() if params else None
+    req = urllib.request.Request(url, data=data)
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)
+
+
+def send(tok, chat, text, keyboard=None):
+    p = {"chat_id": chat, "text": text, "parse_mode": "HTML"}
+    if keyboard:
+        p["reply_markup"] = json.dumps({"inline_keyboard": keyboard})
+    try:
+        api(tok, "sendMessage", **p)
+        return True
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:300]
+        print("send failed: HTTP %d %s" % (e.code, body))
+        return False
+    except Exception as e:
+        print("send failed: %s" % e)
+        return False
+
+
+def _b(text, data):
+    return {"text": text, "callback_data": data}
+
+
+BUTTONS = [
+    [_b("🔐 LOGIN BROKER", "login"), _b("🔄 SWITCH BROKER", "switch")],
+    [_b("📊 STATUS", "status"), _b("🎯 NEXT SETUP", "next")],
+    [_b("📈 OPEN TRADES", "trades"), _b("❓ WHY NO TRADE", "why")],
+    [_b("⏸ PAUSE", "pause"), _b("▶️ RESUME", "resume")],
+    [_b("⏭ SKIP GROUP", "skip")],
+]
+
+
+def run_ctl(arg):
+    """run this same script's subcommand and return its stdout"""
+    r = subprocess.run([sys.executable, os.path.abspath(__file__), arg],
+                       capture_output=True, text=True, timeout=30)
+    return (r.stdout or r.stderr).strip()
+
+
+def tg_del(tok, chat, msg_id):
+    """Delete a message (used to scrub a password out of the chat)."""
+    try:
+        api(tok, "deleteMessage", chat_id=chat, message_id=msg_id)
+        return True
+    except Exception as e:
+        print("delete failed: %s" % e)
+        return False
+
+
+def load_brokers():
+    try:
+        if BROKERS.exists():
+            return json.loads(BROKERS.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def save_broker(server, login, extra=None):
+    b = load_brokers()
+    b[server] = {"server": server, "login": str(login), "when": int(time.time())}
+    if extra:
+        b[server].update(extra)
+    BROKERS.write_text(json.dumps(b, indent=2))
+    return b
+
+
+def mt5_login(server, login, pw):
+    """Hand the credentials to the Wine python on STDIN - argv stays clean."""
+    if not LOGIN_SH.exists():
+        return {"login_ok": False, "error": "mt5_login.sh belum dipasang"}
+    r = subprocess.run([str(LOGIN_SH)], input="%s\n%s\n%s\n" % (server, login, pw),
+                       capture_output=True, text=True, timeout=180)
+    out = (r.stdout or "").strip().splitlines()
+    for line in out:
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except Exception:
+                pass
+    return {"login_ok": False, "error": (r.stdout or r.stderr or "tiada output")[:300]}
+
+
+def cmd_brokers():
+    b = load_brokers()
+    if not b:
+        print("tiada broker tersimpan - guna butang LOGIN BROKER")
+        return
+    for k, v in b.items():
+        print("  %-38s login=%s" % (k, v.get("login")))
+
+
+def cmd_bot():
+    e = env()
+    tok, chat = e.get("TG_TOKEN"), e.get("TG_CHAT")
+    if not tok or not chat:
+        sys.exit("TG_TOKEN / TG_CHAT missing from %s" % ENVF)
+    allowed = {int(x) for x in e.get("TG_ALLOWED", chat).split(",") if x.strip()}
+    print("trader bot up (chat=%s, allowed=%s)" % (chat, sorted(allowed)))
+    send(tok, chat, "🟢 <b>CyberFibo control</b> sedia.\nGuna butang di bawah.", BUTTONS)
+    off = 0
+    while True:
+        try:
+            upd = api(tok, "getUpdates", offset=off, timeout=50)
+        except Exception as ex:
+            print("poll error: %s" % ex)
+            time.sleep(5)
+            continue
+        for u in upd.get("result", []):
+            off = u["update_id"] + 1
+            uid = (u.get("message") or u.get("callback_query", {}).get("message") or {}).get("chat", {}).get("id")
+            if uid not in allowed:
+                continue
+            cq = u.get("callback_query")
+            m = u.get("message", {}) or {}
+            raw_txt = (m.get("text") or "").strip()
+            txt = raw_txt.lower()
+            verb = cq["data"] if cq else txt.lstrip("/").split()[0]
+
+            # ---- /login <server> <login> <password> ----------------------
+            if not cq and txt.startswith("/login"):
+                parts = raw_txt.split()
+                mid = m.get("message_id")
+                if len(parts) < 4:
+                    send(tok, uid, "Format: <code>/login SERVER LOGIN PASSWORD</code>\n"
+                                   "contoh: /login TradingProInternational-Demo 5008941 rahsia",
+                         BUTTONS)
+                    continue
+                srv, lgn, pw = parts[1], parts[2], parts[3]
+                tg_del(tok, uid, mid)                      # scrub it immediately
+                send(tok, uid, "⏳ cuba login ke <b>%s</b> sebagai %s ..." % (srv, lgn))
+                res = mt5_login(srv, lgn, pw)
+                del pw                                     # drop it here too
+                if res.get("login_ok"):
+                    save_broker(srv, lgn, res.get("account"))
+                    a = res.get("account") or {}
+                    send(tok, uid, "✅ <b>LOGIN OK</b>\nserver  : %s\nlogin   : %s\n"
+                                   "balance : %s %s\nleverage: 1:%s"
+                         % (srv, lgn, a.get("balance"), a.get("currency"), a.get("leverage")),
+                         BUTTONS)
+                else:
+                    send(tok, uid, "❌ <b>LOGIN GAGAL</b>\n%s" % str(res.get("error"))[:300],
+                         BUTTONS)
+                continue
+            # -------------------------------------------------------------
+            if cq:
+                try:
+                    api(tok, "answerCallbackQuery", callback_query_id=cq["id"])
+                except Exception:
+                    pass
+            if verb in ("brokers",):
+                send(tok, uid, "<pre>%s</pre>" % run_ctl("brokers"), BUTTONS)
+            elif verb == "switch":
+                b = load_brokers()
+                if not b:
+                    send(tok, uid, "tiada broker tersimpan. Guna 🔐 LOGIN BROKER dulu.", BUTTONS)
+                else:
+                    kb = [[_b("🔄 %s (%s)" % (k, v.get("login")), "use:" + k)]
+                          for k, v in list(b.items())[:8]]
+                    send(tok, uid, "Pilih broker:", kb)
+            elif verb.startswith("use:"):
+                key = verb[4:]
+                b = load_brokers()
+                v = b.get(key)
+                if not v:
+                    send(tok, uid, "broker tidak dijumpai: %s" % key, BUTTONS)
+                else:
+                    send(tok, uid, "⏳ cuba tukar ke <b>%s</b> (login %s) tanpa password "
+                                   "- MT5 guna kredensial tersimpan ..." % (key, v.get("login")))
+                    res = mt5_login(key, v.get("login"), "")
+                    send(tok, uid, ("✅ ditukar ke %s" % key) if res.get("login_ok")
+                         else ("❌ perlu password semula ✗ — hantar "
+                               "<code>/login %s %s PASSWORD</code>" % (key, v.get("login"))),
+                         BUTTONS)
+            elif verb in ("status", "next", "trades", "why"):
+                send(tok, uid, "<pre>%s</pre>" % run_ctl(verb).replace("<", "&lt;"), BUTTONS)
+            elif verb == "pause":
+                write_control(paused=True)
+                send(tok, uid, "⏸ <b>PAUSE</b> - tiada leg baharu akan dibuka.\n"
+                               "Posisi sedia ada kekal (SL/TP server-side).", BUTTONS)
+            elif verb == "resume":
+                write_control(paused=False)
+                send(tok, uid, "▶️ <b>RESUME</b> - bot boleh masuk setup semula.", BUTTONS)
+            elif verb == "skip":
+                write_control(skip=True)
+                send(tok, uid, "⏭ <b>SKIP</b> - group semasa ditandakan habis, cari yang seterusnya.", BUTTONS)
+            elif verb == "closeall":
+                write_control(close_all=True)
+                send(tok, uid, "⚠️ <b>CLOSE ALL</b> dihantar - bot akan tutup semua leg miliknya.", BUTTONS)
+            elif verb in ("start", "menu", "help"):
+                send(tok, uid, "🟢 <b>CyberFibo control</b>\nButang di bawah, atau taip "
+                               "status / next / trades / why / pause / resume / skip.", BUTTONS)
+            else:
+                send(tok, uid, "arahan tidak dikenali: <code>%s</code>" % verb, BUTTONS)
+
+
+def cmd_tgcheck():
+    """Diagnose the Telegram side: which bot, and whether the user has opened it."""
+    e = env()
+    tok, chat = e.get("TG_TOKEN"), e.get("TG_CHAT")
+    if not tok or not chat:
+        sys.exit("TG_TOKEN / TG_CHAT missing from %s" % ENVF)
+    try:
+        me = api(tok, "getMe")["result"]
+        print("bot     : @%s (id %s)" % (me.get("username"), me.get("id")))
+    except Exception as ex:
+        print("bot     : TIDAK BOLEH hubungi Telegram: %s" % ex)
+        return
+    print("chat id : %s" % chat)
+    try:
+        r = api(tok, "getChat", chat_id=chat)["result"]
+        nm = r.get("first_name") or r.get("title") or "?"
+        print("chat    : OK - %s" % nm)
+        print("VERDICT : bot BOLEH hantar mesej kepada kau")
+    except urllib.error.HTTPError as ex:
+        print("chat    : HTTP %d %s" % (ex.code, ex.read().decode("utf-8", "replace")[:200]))
+        print("VERDICT : kau BELUM tekan /start pada @%s" % me.get("username"))
+        print("          buka https://t.me/%s dan tekan START" % me.get("username"))
+    except Exception as ex:
+        print("chat    : ERR %s" % ex)
+
+
+def cmd_notify():
+    e = env()
+    tok, chat = e.get("TG_TOKEN"), e.get("TG_CHAT")
+    if not tok or not chat:
+        sys.exit("TG_TOKEN / TG_CHAT missing")
+    print("notifier up, tailing %s" % EVENTS)
+    EVENTS.touch()
+    pos = EVENTS.stat().st_size
+    while True:
+        time.sleep(3)
+        try:
+            size = EVENTS.stat().st_size
+            if size < pos:
+                pos = 0
+            if size == pos:
+                continue
+            with EVENTS.open() as f:
+                f.seek(pos)
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except Exception:
+                        continue
+                    kind = ev.get("kind", "info")
+                    icon = {"entry": "🟢 MASUK", "exit": "🔴 KELUAR", "skip": "⏭ SKIP",
+                            "error": "⚠️ RALAT", "sim": "🧪 SIM"}.get(kind, "ℹ️")
+                    send(tok, chat, "<b>%s</b>\n<code>%s</code>"
+                         % (icon, str(ev.get("text", ""))[:900]))
+                pos = f.tell()
+        except Exception as ex:
+            print("notify error: %s" % ex)
+
+
+CMDS = {"status": cmd_status, "next": cmd_next, "trades": cmd_trades, "why": cmd_why,
+        "pause": lambda: print(write_control(paused=True) and "⏸ paused"),
+        "resume": lambda: print(write_control(paused=False) and "▶️ resumed"),
+        "skip": lambda: print(write_control(skip=True) and "⏭ skip armed"),
+        "closeall": lambda: print(write_control(close_all=True) and "⚠️ close_all armed"),
+        "brokers": cmd_brokers, "sim": cmd_sim, "bot": cmd_bot, "notify": cmd_notify, "tgcheck": cmd_tgcheck}
+
+if __name__ == "__main__":
+    a = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if a not in CMDS:
+        sys.exit("usage: traderctl {%s}" % "|".join(CMDS))
+    CMDS[a]()

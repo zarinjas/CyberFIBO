@@ -1,0 +1,18 @@
+[Unit]
+Description=CyberFIBO trade notifier (events.jsonl -> Telegram)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/trading
+Environment=TRADER_ROOT=/opt/trading
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/trading/bin/traderctl notify
+Restart=always
+RestartSec=5
+MemoryMax=100M
+CPUWeight=50
+OOMScoreAdjust=600
+
+[Install]
+WantedBy=default.target
