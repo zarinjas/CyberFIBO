@@ -1,6 +1,6 @@
 #!/bin/bash
 # NOTA: skrip ini khusus Linux+Wine (menjana unit systemd). Pada Windows, MT5
-# berjalan asli — guna Task Scheduler/NSSM dan langkau skrip ini sepenuhnya.
+# berjalan asli - guna Task Scheduler/NSSM dan langkau skrip ini sepenuhnya.
 # Install the MT5 + scalper units. Memory-capped and OOM-scored so a memory
 # squeeze can only ever kill OUR processes, never mykiznext.
 set -e

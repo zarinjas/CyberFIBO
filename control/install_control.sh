@@ -34,11 +34,11 @@ if [ ! -f "$D/.env" ]; then
     echo "  .env disalin dari repo (600)"
   else
     install -m 600 "$SRC/.env.example" "$D/.env"
-    echo "  ⚠️  .env dicipta dari .env.example — ISI TG_TOKEN/TG_CHAT kemudian chmod 600"
+    echo "  ??  .env dicipta dari .env.example - ISI TG_TOKEN/TG_CHAT kemudian chmod 600"
   fi
 else
   chmod 600 "$D/.env"
-  echo "  .env sedia ada — dibiarkan"
+  echo "  .env sedia ada - dibiarkan"
 fi
 
 mkdir -p "$U"
@@ -59,4 +59,4 @@ echo
 echo "seterusnya:"
 echo "  traderctl tgcheck          # pastikan bot boleh hantar mesej kepada kau"
 echo "  traderctl sim && traderctl status"
-echo "  → kemudian buka bot Telegram dan tekan START"
+echo "  ? kemudian buka bot Telegram dan tekan START"

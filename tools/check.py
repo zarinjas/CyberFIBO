@@ -49,6 +49,28 @@ def tests():
     return last
 
 
+def encoding():
+    """Fail skrip mesti ASCII tulen.
+
+    Windows PowerShell 5.1 membaca .ps1 UTF-8-tanpa-BOM sebagai ANSI, jadi satu
+    em-dash sudah cukup untuk menjadi bait sampah yang menelan quote - dan
+    ralatnya muncul berpuluh baris kemudian, mengelirukan. Perangkap ini sudah
+    memakan kita sekali; lint ini memastikan ia tidak berulang.
+    """
+    files = sorted(
+        glob.glob(str(REPO / "control/*.ps1"))
+        + glob.glob(str(REPO / "control/*.sh"))
+        + glob.glob(str(REPO / "control/systemd/*.service"))
+    )
+    bad = []
+    for f in files:
+        if any(b > 127 for b in pathlib.Path(f).read_bytes()):
+            bad.append(pathlib.Path(f).name)
+    if bad:
+        raise RuntimeError("bukan-ASCII dalam: %s" % ", ".join(bad))
+    return "%d fail, ASCII bersih" % len(files)
+
+
 def display():
     r = subprocess.run([PY, str(REPO / "tools/check_account_display.py")],
                        capture_output=True, text=True, cwd=str(REPO))
@@ -58,6 +80,7 @@ def display():
 
 
 step("sintaks", syntax)
+step("encoding skrip", encoding)
 step("ujian (pytest)", tests)
 step("paparan akaun", display)
 

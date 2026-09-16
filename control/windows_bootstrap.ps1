@@ -1,5 +1,5 @@
 <#
-    CyberFIBO — bootstrap untuk Windows Server yang baru.
+    CyberFIBO - bootstrap untuk Windows Server yang baru.
 
     Jalankan sebagai ADMINISTRATOR (PowerShell elevated):
 
@@ -9,7 +9,7 @@
     pasang kunci awam supaya baki pemasangan boleh dijalankan melalui SSH
     (pantas, boleh diulang, dan boleh dilihat). Tiada tetapan lain disentuh.
 
-    Selamat dijalankan berulang kali — setiap langkah menyemak keadaan dahulu.
+    Selamat dijalankan berulang kali - setiap langkah menyemak keadaan dahulu.
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -18,7 +18,7 @@ $PubKey  = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK7siv5sdHiQGNCvzMDw/bTSDywDSzX9
 
 function Say($m) { Write-Host "== $m" }
 
-Say "CyberFIBO bootstrap — $(Get-Date -Format s)"
+Say "CyberFIBO bootstrap - $(Get-Date -Format s)"
 
 # ---------------------------------------------------------------- 1. OpenSSH
 $haveSshd = Get-Service sshd -ErrorAction SilentlyContinue
