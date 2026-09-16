@@ -78,6 +78,21 @@ def fmt_money(x):
     return ("%+.2f" % x) if isinstance(x, (int, float)) else str(x)
 
 
+def acct_line(d):
+    """Satu baris identiti akaun, atau amaran kalau state tiruan."""
+    a = d.get("account") or {}
+    if d.get("synthetic"):
+        return ("  ⚠️  DATA TIRUAN - BUKAN AKAUN SEBENAR\n"
+                "  akaun    : (tiada - MT5 belum disambung)")
+    if not a.get("login"):
+        return "  akaun    : (belum dilaporkan oleh bot)"
+    kind = {True: "DEMO", False: "LIVE"}.get(a.get("demo"), "?")
+    return ("  akaun    : %s @ %s\n"
+            "  nama     : %s   [%s]  leverage 1:%s"
+            % (a.get("login"), a.get("server") or "?", a.get("name") or "-",
+               kind, a.get("leverage") or "?"))
+
+
 def cmd_status():
     d = load()
     if not d:
@@ -90,6 +105,9 @@ def cmd_status():
     print("═" * 46)
     print("  masa     : %s" % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
     print("  keadaan  : %s" % ("⏸ PAUSE" if c.get("paused") else "▶️ JALAN"))
+    print(acct_line(d))
+    if d.get("synthetic"):
+        print("  sumber   : traderctl sim (bukan broker)")
     print("  balance  : %s USC" % d.get("balance"))
     print("  equity   : %s USC" % d.get("equity"))
     print("  floating : %s USC" % fmt_money(d.get("floating", 0)))
@@ -127,9 +145,10 @@ def cmd_trades():
     if not d:
         print("TRADES: tiada state")
         return
+    print(acct_line(d))
     ps = d.get("positions", [])
     if not ps:
-        print("  TIADA posisi terbuka")
+        print("\n  TIADA posisi terbuka")
         return
     print("  %-4s %-10s %-5s %6s %10s %10s %10s %9s" %
           ("arm", "ticket", "side", "lot", "masuk", "SL", "TP", "profit"))
@@ -170,6 +189,8 @@ def cmd_sim():
     write_control(paused=False)
     ARMS.write_text(json.dumps({
         "synthetic": True,
+        "account": {"login": "SIM-0000000", "server": "SIMULASI", "name": "DATA UJIAN",
+                    "currency": "USC", "leverage": 500, "demo": True},
         "updated": now,
         "balance": 11799.62, "equity": 12101.10, "floating": 301.48,
         "positions": [

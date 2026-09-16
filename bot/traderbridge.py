@@ -86,7 +86,7 @@ def pub_arm(name, tf, magic, action, reason="", group="", levels="", price="", z
 
 
 def pub_account(balance, equity, floating, positions, arm=None, next_event="",
-                paused=False, floating_arm=0.0):
+                paused=False, floating_arm=0.0, account=None):
     """Each arm publishes only ITS OWN positions; the others are preserved by
     matching on `arm`, so N arms don't clobber each other's rows."""
     d = _load()
@@ -98,4 +98,14 @@ def pub_account(balance, equity, floating, positions, arm=None, next_event="",
              positions=keep + list(positions),
              next_event=next_event, control=dict(control(), paused=paused))
     d["floating"] = round(sum(float(p.get("profit") or 0) for p in d["positions"]), 2)
+    if account:
+        # identiti akaun - supaya paparan Telegram tidak boleh dikelirukan
+        d["account"] = dict(
+            login=account.get("login"),
+            server=account.get("server"),
+            name=account.get("name") or "",
+            currency=account.get("currency") or "",
+            leverage=account.get("leverage"),
+            demo=(account.get("trade_mode") == 0) if "trade_mode" in account else None,
+        )
     _save(d)

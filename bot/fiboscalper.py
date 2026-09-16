@@ -651,8 +651,12 @@ def cycle(dry: bool, st: dict) -> int:
                          lot=p.volume, entry=round(p.price_open, 2), sl=round(p.sl, 2),
                          tp=round(p.tp, 2), profit=round(p.profit, 2))
                     for p in q]
-            _tb.pub_account(acct.balance, acct.equity,
-                            sum(r["profit"] for r in rows), rows, arm=os.environ.get("FIBOSCALPER_TAG", "?"))
+            _tb.pub_account(
+                acct.balance, acct.equity, sum(r["profit"] for r in rows), rows,
+                arm=os.environ.get("FIBOSCALPER_TAG", "?"),
+                account=dict(login=acct.login, server=acct.server, name=acct.name,
+                             currency=acct.currency, leverage=acct.leverage,
+                             trade_mode=getattr(acct, "trade_mode", None)))
         except Exception as e:
             log(f"  bridge: {type(e).__name__}: {e}")
 
