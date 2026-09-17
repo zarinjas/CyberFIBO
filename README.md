@@ -14,7 +14,7 @@ tidak boleh menjejaskan aplikasi lain.
 | Folder | Apa |
 |---|---|
 | `bot/` | Scalper MT5 (`fiboscalper.py`), pustaka (`mt5lib.py`), backtester (`fibo_ha_backtest.py`), jambatan state (`traderbridge.py`), ujian |
-| `control/` | Kawalan Telegram — `traderctl` (satu fail, stdlib sahaja), login broker, unit systemd |
+| `control/` | Kawalan Telegram — `traderctl` (satu fail, stdlib sahaja), login broker, skrip pemasangan Linux + Windows |
 | `studies/` | Kajian penyelidikan (trend matrix, dsb.) |
 | `docs/` | Seni bina + penemuan penting |
 
@@ -65,8 +65,8 @@ systemctl --user status trader-bot trader-notify
 ## Pemasangan di Windows
 
 Kod ini **stdlib Python sahaja** — `traderctl`, `traderbridge.py` dan bot scalper
-jalan tanpa ubah di Windows. Yang perlu diganti hanya **systemd → Task Scheduler /
-NSSM**. Pada Windows, MT5 Python API disokong **rasmi** — tiada Wine, tiada helah.
+jalan tanpa ubah di Windows. Pada Windows, MT5 Python API disokong **rasmi** —
+tiada Wine, tiada helah. Langkah penuh: **[docs/WINDOWS.md](docs/WINDOWS.md)**.
 
 ---
 
