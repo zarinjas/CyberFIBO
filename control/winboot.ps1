@@ -94,5 +94,14 @@ Write-Host ("   sshd          : " + (Get-Service sshd -ErrorAction SilentlyConti
 Write-Host ("   sshd startup  : " + (Get-Service sshd -ErrorAction SilentlyContinue).StartType)
 Write-Host ("   port 22 rule  : " + [bool](Get-NetFirewallRule -Name 'CyberFIBO-SSH' -ErrorAction SilentlyContinue))
 Write-Host ("   kunci         : " + (Select-String -Path $KeyFile -Pattern 'hermes@pc-cyberfibo-win' -Quiet))
-Write-Host ""
-Write-Host "SIAP. Balik ke Hermes dan beritahu 'ok'."
+Write-Host ''
+Write-Host 'SIAP. OpenSSH hidup.'
+Write-Host ''
+Write-Host 'LANGKAH SETERUSNYA (dari mesin anda, melalui SSH):'
+Write-Host '  powershell -File winstage2.ps1 -TgToken <token> -TgChat <chat_id> -Start'
+Write-Host ''
+Write-Host 'Ambil skrip itu dari repo:'
+Write-Host '  irm https://cdn.jsdelivr.net/gh/zarinjas/CyberFIBO@main/control/winstage2.ps1 -OutFile winstage2.ps1'
+Write-Host 'Panduan penuh: docs/WINDOWS.md di dalam repo.'
+Write-Host ''
+Write-Host 'Juga: buka port 22 pada Security Group penyedia VPS.'
