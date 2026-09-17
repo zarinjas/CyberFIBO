@@ -31,6 +31,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# Strategi: registry tinggal dalam bot/ (satu tempat untuk semua bot).
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "bot"))
+try:
+    import strategies as STRAT
+except Exception:
+    STRAT = None
+
 # Windows Server CN ships with codepage GBK, so printing the button glyphs
 # (arrows, pause bars, status dots) raises UnicodeEncodeError and the whole
 # command dies. Force UTF-8 on the streams instead of stripping the glyphs:
@@ -103,6 +110,73 @@ def acct_line(d):
                kind, a.get("leverage") or "?"))
 
 
+def strategy_line_short():
+    """Ringkasan satu baris untuk STATUS - strategy mana yang aktif."""
+    if not STRAT:
+        return "  strategy : (registry tidak dijumpai)"
+    return "  strategy : %s" % STRAT.active()
+
+
+def open_positions_count():
+    """Bilangan posisi terbuka dari state (tanpa perlu MT5)."""
+    try:
+        d = json.loads(ARMS.read_text(encoding="utf-8"))
+        return len(d.get("positions", []))
+    except Exception:
+        return 0
+
+
+def cmd_strategy():
+    if not STRAT:
+        print("STRATEGY: registry tidak dijumpai")
+        return
+    cur = STRAT.active()
+    d = STRAT.info(cur)
+    print("=" * 62)
+    print("  STRATEGY")
+    print("=" * 62)
+    print("  aktif   : %s" % cur)
+    print("  status  : %s" % d.get("status"))
+    print("  magics  : %s" % d.get("magic"))
+    if d.get("note"):
+        print("  nota    : %s" % d["note"])
+    print("  posisi  : %d terbuka" % open_positions_count())
+    print()
+    print("  %-20s %-14s %s" % ("id", "status", "keterangan"))
+    for sid in STRAT.REGISTRY:
+        dd = STRAT.info(sid)
+        mark = "  <- AKTIF" if sid == cur else ""
+        print("  %-20s %-14s %s%s" % (sid, dd.get("status"), dd.get("desc", ""), mark))
+    print()
+    print("  tukar: /strategy fibo | /strategy chain | /strategy ema74")
+
+
+def strategy_switch(word):
+    """Tukar strategy aktif. Menolak jika posisi terbuka (elak campur)."""
+    if not STRAT:
+        return "registry tidak dijumpai"
+    sid = STRAT.resolve(word)
+    if not sid:
+        return ("strategy tidak dikenali: %s\n  guna: fibo | chain | ema74" % word)
+    cur = STRAT.active()
+    if sid == cur:
+        return "sudah aktif: %s (%s)" % (sid, STRAT.info(sid).get("status"))
+    n = open_positions_count()
+    if n:
+        return ("DITOLAK - %d posisi masih terbuka.\n"
+                "  Tutup dahulu (butang CLOSE ALL) supaya posisi tidak bercampur "
+                "antara strategy." % n)
+    d = STRAT.info(sid)
+    if d.get("status") != STRAT.ACTIVE:
+        # dibenarkan menukar KE strategy bukan-aktif? Tidak - itu akan menipu
+        # pengguna kerana bot akan menolak untuk berjalan.
+        return ("DITOLAK - %s berstatus %s.\n  %s\n"
+                "  Strategy bukan-ACTIVE tidak boleh membuka trade hidup."
+                % (sid, d.get("status"), d.get("note", "")))
+    STRAT.set_active(sid)
+    return "ditukar ke %s" % sid
+
+
 def cmd_status():
     d = load()
     if not d:
@@ -116,6 +190,7 @@ def cmd_status():
     print("  masa     : %s" % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
     print("  keadaan  : %s" % ("⏸ PAUSE" if c.get("paused") else "▶️ JALAN"))
     print(acct_line(d))
+    print(strategy_line_short())
     if d.get("synthetic"):
         print("  sumber   : traderctl sim (bukan broker)")
     print("  balance  : %s USC" % d.get("balance"))
@@ -268,6 +343,7 @@ BUTTONS = [
     [_b("📈 OPEN TRADES", "trades"), _b("❓ WHY NO TRADE", "why")],
     [_b("⏸ PAUSE", "pause"), _b("▶️ RESUME", "resume")],
     [_b("⏭ SKIP GROUP", "skip"), _b("⏱ TIMEFRAME", "tf")],
+    [_b("\U0001f3af STRATEGY", "strategy")],
 ]
 
 TF_BUTTONS = [
@@ -377,6 +453,19 @@ def cmd_bot():
             txt = raw_txt.lower()
             verb = cq["data"] if cq else txt.lstrip("/").split()[0]
 
+            # ---- /strategy [fibo|chain|ema74] ---------------------------
+            if not cq and txt.startswith("/strategy"):
+                parts = raw_txt.split()
+                if len(parts) == 1:
+                    send(tok, uid, "<pre>%s</pre>" % run_ctl("strategy").replace("<", "&lt;"),
+                         BUTTONS)
+                else:
+                    res = strategy_switch(parts[1])
+                    send(tok, uid, ("\u2705 <b>Strategy Changed</b>\n\nCurrent Strategy:\n<b>%s</b>"
+                                    % STRAT.active()) if res.startswith("ditukar")
+                         else ("\u26d4 %s" % res), BUTTONS)
+                continue
+            # -------------------------------------------------------------
             # ---- /login <server> <login> <password> ----------------------
             if not cq and txt.startswith("/login"):
                 parts = raw_txt.split()
@@ -447,6 +536,21 @@ def cmd_bot():
                                    "Trend filter juga %s.\n"
                                    "Bot akan guna ini pada kitaran berikutnya (30s atau kurang)."
                                    % (tf, tf), BUTTONS)
+            elif verb == "strategy":
+                if not STRAT:
+                    send(tok, uid, "registry tidak dijumpai", BUTTONS)
+                else:
+                    kb = [[_b("%s %s" % (STRAT.ICON.get(STRAT.info(sid).get("status"), ""), sid),
+                              "strategy:" + sid)] for sid in STRAT.REGISTRY]
+                    kb.append([_b("\U0001f519 kembali", "menu")])
+                    send(tok, uid, "<pre>%s</pre>"
+                         % run_ctl("strategy").replace("<", "&lt;"), kb)
+            elif verb.startswith("strategy:"):
+                sid = verb.split(":", 1)[1]
+                res = strategy_switch(sid)
+                send(tok, uid, ("\u2705 <b>Strategy Changed</b>\n\nCurrent Strategy:\n<b>%s</b>"
+                                % STRAT.active()) if res.startswith("ditukar")
+                     else ("\u26d4 %s" % res), BUTTONS)
             elif verb == "menu":
                 send(tok, uid, "Menu:", BUTTONS)
             elif verb in ("status", "next", "trades", "why"):
@@ -525,9 +629,11 @@ def cmd_notify():
                         continue
                     kind = ev.get("kind", "info")
                     icon = {"entry": "🟢 MASUK", "exit": "🔴 KELUAR", "be": "🛡 LINDUNG", "skip": "⏭ SKIP",
-                            "error": "⚠️ RALAT", "sim": "🧪 SIM"}.get(kind, "ℹ️")
-                    send(tok, chat, "<b>%s</b>\n<code>%s</code>"
-                         % (icon, str(ev.get("text", ""))[:900]))
+                            "error": "⚠️ RALAT", "sim": "🧪 SIM",
+                            "be": "🛡 LINDUNG"}.get(kind, "ℹ️")
+                    sid = ev.get("strategy_id") or "?"
+                    send(tok, chat, "<b>%s · %s</b>\n<code>%s</code>"
+                         % (icon, sid, str(ev.get("text", ""))[:900]))
                 pos = f.tell()
         except Exception as ex:
             print("notify error: %s" % ex)
@@ -538,7 +644,8 @@ CMDS = {"status": cmd_status, "next": cmd_next, "trades": cmd_trades, "why": cmd
         "resume": lambda: print(write_control(paused=False) and "▶️ resumed"),
         "skip": lambda: print(write_control(skip=True) and "⏭ skip armed"),
         "closeall": lambda: print(write_control(close_all=True) and "⚠️ close_all armed"),
-        "brokers": cmd_brokers, "sim": cmd_sim, "bot": cmd_bot, "notify": cmd_notify, "tgcheck": cmd_tgcheck}
+        "brokers": cmd_brokers, "sim": cmd_sim, "bot": cmd_bot, "notify": cmd_notify,
+        "tgcheck": cmd_tgcheck, "strategy": cmd_strategy}
 
 if __name__ == "__main__":
     a = sys.argv[1] if len(sys.argv) > 1 else "status"

@@ -28,6 +28,23 @@ EVENTS = ROOT / "events.jsonl"
 
 _seq = 0
 
+# Setiap trade dan notifikasi membawa strategy_id, supaya posisi tidak pernah
+# bercampur antara strategy. Import dilindungi: kalau registry hilang, bot lama
+# masih berjalan (cuma tanpa tag).
+try:
+    import strategies as _st
+except Exception:                                   # pragma: no cover
+    _st = None
+
+
+def strategy_id() -> str:
+    """id strategy untuk dilampirkan. Env STRATEGY_ID menang; jika tidak, gunakan
+    strategy aktif yang disimpan."""
+    try:
+        return os.environ.get("STRATEGY_ID") or (_st.current_id() if _st else "FIBO_V1")
+    except Exception:
+        return os.environ.get("STRATEGY_ID", "FIBO_V1")
+
 
 def event(kind: str, text: str) -> None:
     """Append one line for trader-notify to push. kind: entry|exit|skip|error|info"""
@@ -36,6 +53,7 @@ def event(kind: str, text: str) -> None:
         ROOT.mkdir(parents=True, exist_ok=True)
         with EVENTS.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"ts": int(time.time()), "kind": kind,
+                                "strategy_id": strategy_id(),
                                 "text": text[:900], "seq": _seq}) + "\n")
         _seq += 1
     except Exception:
@@ -80,7 +98,8 @@ def pub_arm(name, tf, magic, action, reason="", group="", levels="", price="", z
     arms = [a for a in d.get("arms", []) if a.get("name") != name]
     arms.append(dict(name=name, tf=tf, magic=magic, action=action, reason=reason,
                      group=group, levels=levels, price=price, zone=zone,
-                     state=state_icon, trades_today=trades_today))
+                     state=state_icon, trades_today=trades_today,
+                     strategy_id=strategy_id()))
     d["arms"] = sorted(arms, key=lambda a: str(a.get("name")))
     _save(d)
 
@@ -90,12 +109,15 @@ def pub_account(balance, equity, floating, positions, arm=None, next_event="",
     """Each arm publishes only ITS OWN positions; the others are preserved by
     matching on `arm`, so N arms don't clobber each other's rows."""
     d = _load()
+    sid = strategy_id()
+    rows = [dict(p, strategy_id=p.get("strategy_id") or sid) for p in positions]
     if arm:
         keep = [p for p in d.get("positions", []) if p.get("arm") != arm]
     else:
         keep = []
     d.update(balance=round(float(balance), 2), equity=round(float(equity), 2),
-             positions=keep + list(positions),
+             positions=keep + rows,
+             strategy_id=sid,
              next_event=next_event, control=dict(control(), paused=paused))
     d["floating"] = round(sum(float(p.get("profit") or 0) for p in d["positions"]), 2)
     if account:
