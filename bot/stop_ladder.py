@@ -227,6 +227,28 @@ def main():
             if not pos and not ords and other:
                 log_exec(dict(kind="blocked_by_other_book", n=len(other),
                               magics=sorted({p.magic for p in other})))
+            # SWEEP: TP/SL sudah kena tetapi pending masih tertinggal.
+            # Spec Hafiz: "setiap kali hit TP, SL dan PO tu kena delete".
+            # Disahkan dua poll berturut-turut supaya saat peralihan
+            # (posisi tutup, pending belum isi) tidak memadam pending sah.
+            if not pos and ords:
+                n = int(st.get("orphan_n", 0)) + 1
+                st["orphan_n"] = n
+                save_state(st)
+                log_exec(dict(kind="orphan_seen", n=n, pendings=len(ords)))
+                if n >= 2:
+                    log_exec(dict(kind="sweep_tp_sl", pendings=len(ords),
+                                  note="tiada posisi buku-ladder -> padam semua pending"))
+                    L.delete_others()
+                    save_state(dict(active=False, ended=True))
+                    bridge.event("exit", "LADDER: tiada posisi, %d pending dipadam (sweep)"
+                                 % len(ords))
+                time.sleep(a.poll)
+                continue
+            if pos:
+                st["orphan_n"] = 0
+                save_state(st)
+
             if not pos and not ords:
                 ok, d = trend_ok(a.threshold)
                 if not ok:
@@ -287,7 +309,8 @@ def main():
                 L.place_pendings(d_cur, float(p.price_open), float(p.volume),
                                  int(st.get("level") or 1))
             elif not cur:
-                log_exec(dict(kind="cycle_end", level=st.get("level")))
+                log_exec(dict(kind="tp_or_sl_hit", level=st.get("level"),
+                              note="posisi tutup -> padam semua pending (RULE 4)"))
                 L.delete_others()
                 save_state(dict(active=False, ended=True))
                 bridge.event("exit", "LADDER TAMAT (RULE 4) — %d aras. Pending dipadam. "
