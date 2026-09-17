@@ -149,6 +149,7 @@ def cmd_strategy():
         print("  %-20s %-14s %s%s" % (sid, dd.get("status"), dd.get("desc", ""), mark))
     print()
     print("  tukar: /strategy fibo | /strategy chain | /strategy ema74")
+    print("  lot  : /lot 2  (risiko %; lot besar bila naik)")
 
 
 def strategy_switch(word):
@@ -343,12 +344,17 @@ BUTTONS = [
     [_b("📈 OPEN TRADES", "trades"), _b("❓ WHY NO TRADE", "why")],
     [_b("⏸ PAUSE", "pause"), _b("▶️ RESUME", "resume")],
     [_b("⏭ SKIP GROUP", "skip"), _b("⏱ TIMEFRAME", "tf")],
-    [_b("\U0001f3af STRATEGY", "strategy")],
+    [_b("\U0001f3af STRATEGY", "strategy"), _b("💰 LOT", "risk")],
 ]
 
 TF_BUTTONS = [
     [_b("M5", "tf:M5"), _b("M15", "tf:M15"), _b("H1", "tf:H1"), _b("H4", "tf:H4")],
     [_b("🔙 kembali", "menu")],
+]
+
+RISK_BUTTONS = [
+    [_b("1%", "risk:1"), _b("2%", "risk:2"), _b("4%", "risk:4"), _b("8%", "risk:8")],
+    [_b("12%", "risk:12"), _b("🔙 kembali", "menu")],
 ]
 
 
@@ -364,6 +370,22 @@ def write_request(only: bool = False, **kw):
     d.update(kw)
     REQ.write_text(json.dumps(d))
     return True
+
+
+def set_risk(tok, uid, v):
+    """Tukar risiko % -> scalper kira semula lot. Lot besar bila % naik."""
+    try:
+        r = float(v)
+    except (TypeError, ValueError):
+        r = 0.0
+    if not (0 < r <= 50):
+        send(tok, uid, "⛔ risiko tidak sah: %s (guna 0.5 - 50)" % v, BUTTONS)
+        return
+    write_request(only=True, risk_pct=r)
+    send(tok, uid, "✅ <b>Risiko ditukar ke %g%%</b>\n"
+                   "Lot dikira dari jarak stop + baki akaun.\n"
+                   "Bot guna ini pada kitaran berikutnya (30s atau kurang)." % r,
+         BUTTONS)
 
 
 def run_ctl(arg):
@@ -466,6 +488,16 @@ def cmd_bot():
                          else ("\u26d4 %s" % res), BUTTONS)
                 continue
             # -------------------------------------------------------------
+            # ---- /lot [peratus] -----------------------------------------
+            if not cq and txt.startswith(("/lot", "/risk")):
+                parts = raw_txt.split()
+                if len(parts) == 1:
+                    send(tok, uid, "<pre>%s</pre>" % run_ctl("status").replace("<", "&lt;"),
+                         RISK_BUTTONS)
+                else:
+                    set_risk(tok, uid, parts[1])
+                continue
+            # -------------------------------------------------------------
             # ---- /login <server> <login> <password> ----------------------
             if not cq and txt.startswith("/login"):
                 parts = raw_txt.split()
@@ -551,6 +583,15 @@ def cmd_bot():
                 send(tok, uid, ("\u2705 <b>Strategy Changed</b>\n\nCurrent Strategy:\n<b>%s</b>"
                                 % STRAT.active()) if res.startswith("ditukar")
                      else ("\u26d4 %s" % res), BUTTONS)
+            elif verb == "risk":
+                send(tok, uid, "💰 <b>Saiz lot (risiko %)</b>\n"
+                               "Lot dikira dari jarak stop dan baki akaun:\n"
+                               "  risiko naik  -> lot BESAR\n"
+                               "  risiko turun -> lot KECIL\n"
+                               "Bot guna ini pada kitaran berikutnya (30s atau kurang).",
+                     RISK_BUTTONS)
+            elif verb.startswith("risk:"):
+                set_risk(tok, uid, verb.split(":", 1)[1])
             elif verb == "menu":
                 send(tok, uid, "Menu:", BUTTONS)
             elif verb in ("status", "next", "trades", "why"):

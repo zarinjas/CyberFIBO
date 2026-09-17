@@ -660,6 +660,16 @@ def _apply_request():
     if "trend" in q:
         CFG["trend_mode"] = "align" if q["trend"] else "off"
         log(f"  control: trend -> {CFG['trend_mode']}")
+    if "risk_pct" in q:
+        # Lot dikira dari risiko % + jarak stop (lihat lot_for), jadi menukar
+        # risiko di sini terus mengubah saiz lot tanpa restart.
+        try:
+            v = float(q["risk_pct"])
+        except (TypeError, ValueError):
+            v = 0.0
+        if 0 < v <= 50:
+            CFG["risk_pct"] = v
+            log(f"  control: risiko -> {v}% (lot dikira semula)")
 
 
 def _why_entry(s, rk, lot):
