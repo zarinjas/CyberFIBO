@@ -524,7 +524,7 @@ def cmd_notify():
                     except Exception:
                         continue
                     kind = ev.get("kind", "info")
-                    icon = {"entry": "🟢 MASUK", "exit": "🔴 KELUAR", "skip": "⏭ SKIP",
+                    icon = {"entry": "🟢 MASUK", "exit": "🔴 KELUAR", "be": "🛡 LINDUNG", "skip": "⏭ SKIP",
                             "error": "⚠️ RALAT", "sim": "🧪 SIM"}.get(kind, "ℹ️")
                     send(tok, chat, "<b>%s</b>\n<code>%s</code>"
                          % (icon, str(ev.get("text", ""))[:900]))

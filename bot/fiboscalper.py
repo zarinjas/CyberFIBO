@@ -549,6 +549,11 @@ def manage(st: dict, dry: bool) -> None:
                     log(f"  BE {rec['side']} ticket={rec['ticket']} stop -> entry {be:.2f} "
                         f"(+{pos.profit:.0f} USC secured)")
                     rec["bpd"] = True
+                    if _tb:
+                        _tb.event("be", "LINDUNG %s  ticket=%s\nSL dipindah ke harga masuk %.2f\n"
+                                  "sebab: untung sudah %.0f USC (sasaran lindung %s USC)\n"
+                                  "dari sini kerugian tidak lagi mungkin"
+                                  % (rec["side"], rec["ticket"], be, pos.profit, CFG["be_at"]))
 
         # grace: count closed candles since entry
         bars_since = int((d["time"][-1] - rec["entry_bar_time"]) / 300)
@@ -708,8 +713,9 @@ def cycle(dry: bool, st: dict) -> int:
                 q = next((x for x in (mt5.positions_get() or ()) if x.ticket == rec["ticket"]), None)
                 if q and not dry:
                     if _tb:
-                        _tb.event("exit", "CLOSE-ALL ticket=%s (%+.0f USC)"
-                                  % (q.ticket, q.profit))
+                        _tb.event("exit", "KELUAR %s (ARAHAN)  %+.0f USC  ticket=%s\n\n%s"
+                                  % (rec["side"], q.profit, q.ticket,
+                                     _why_exit(rec, q, "forced")))
                     close_position(q, comment="fiboHA close_all")
             st["open"] = []
             log("  control: closed everything")
