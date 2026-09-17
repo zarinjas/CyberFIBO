@@ -7,12 +7,15 @@ re-implement EMA/ATR/ADX anywhere else.
 """
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import MetaTrader5 as mt5
 import numpy as np
+
+MT5_PATH_DEFAULT = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 
 SYMBOL = "XAUUSDc"          # the only tradeable XAU symbol (XAUUSD is close-only)
 M5, M15 = mt5.TIMEFRAME_M5, mt5.TIMEFRAME_M15
@@ -23,8 +26,17 @@ OK, WARN, BAD, NA = "[OK]  ", "[WARN]", "[FAIL]", "[ -- ]"
 
 # ---------------------------------------------------------------- connection
 def connect():
-    """Initialize the terminal. Returns (terminal_info, account_info)."""
-    if not mt5.initialize():
+    """Initialize the terminal. Returns (terminal_info, account_info).
+
+    The terminal path is passed explicitly because a service session (Windows
+    Scheduled Task running as SYSTEM) has no registry view of the user install
+    and cannot discover the terminal on its own - without it initialize() fails
+    with "IPC initialize failed, MetaTrader 5 x64 not found". Override with
+    MT5_PATH, or omit the file to fall back to auto-discovery.
+    """
+    path = os.environ.get("MT5_PATH", MT5_PATH_DEFAULT)
+    ok = mt5.initialize(path=path) if path and os.path.exists(path) else mt5.initialize()
+    if not ok:
         raise SystemExit(f"MT5 initialize failed: {mt5.last_error()}")
     return mt5.terminal_info(), mt5.account_info()
 

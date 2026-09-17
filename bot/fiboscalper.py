@@ -592,6 +592,43 @@ def manage(st: dict, dry: bool) -> None:
 
 
 # ------------------------------------------------------------------ cycle
+def _publish(s, d, st):
+    """Publish this arm's summary + the account to the control plane.
+
+    Called every cycle, BEFORE the early returns: the normal state of the world
+    is "no setup in the zone", and the control plane must still be able to show
+    that the bot is alive. traderbridge merges per-arm rows, so N arms on one
+    account do not clobber each other.
+    """
+    if not _tb:
+        return
+    tag = os.environ.get("FIBOSCALPER_TAG", "?")
+    try:
+        q = [x for x in (mt5.positions_get() or ())
+             if x.ticket in {int(r["ticket"]) for r in st.get("open", [])}]
+        acct = mt5.account_info()
+        rows = [dict(arm=tag, ticket=p.ticket, side="BUY" if p.type == 0 else "SELL",
+                     lot=p.volume, entry=round(p.price_open, 2), sl=round(p.sl, 2),
+                     tp=round(p.tp, 2), profit=round(p.profit, 2))
+                for p in q]
+        _tb.pub_arm(tag, CFG["fibo_tf"], CFG["magic"],
+                    s.side if s else "-",
+                    reason=("setup %.1f%% in zone" % s.lvl) if s else "tiada setup dalam zon",
+                    group=ser(s.group_start_time) if s else "",
+                    levels=("%.2f / %.2f" % (s.p0, s.p100)) if s else "",
+                    price="%.2f" % float(d["close"][-1]),
+                    zone="%.1f-%.1f%%" % (CFG["zone"], CFG["gap_zone"]),
+                    state_icon="\U0001f7e2" if s else "\u23f3",
+                    trades_today=len(st.get("open", [])))
+        _tb.pub_account(acct.balance, acct.equity, sum(r["profit"] for r in rows), rows,
+                        arm=tag,
+                        account=dict(login=acct.login, server=acct.server, name=acct.name,
+                                     currency=acct.currency, leverage=acct.leverage,
+                                     trade_mode=getattr(acct, "trade_mode", None)))
+    except Exception as e:
+        log(f"  bridge: {type(e).__name__}: {e}")
+
+
 def cycle(dry: bool, st: dict) -> int:
     d = load(M5, 400)
     if d is None or d["time"].size < 100:
@@ -634,6 +671,12 @@ def cycle(dry: bool, st: dict) -> int:
                    tp_level=CFG["tp_level"], sl_buf=CFG["sl_buf"], tp_pts=CFG["tp_pts"], tp_pad=CFG["tp_pad"],
                    lo_len=CFG["lo_len"], hi_len=CFG["hi_len"],
                    min_ext_atr=CFG["min_ext_atr"])
+    # Publish BEFORE the early returns. Without this the bridge never writes
+    # state/arms.json whenever no setup is live - which is the normal case - so
+    # `traderctl status` reported "tiada state" even with the bot running.
+    if _tb:
+        _publish(s, d, st)
+
     if s is None:
         return 0
     key = f"{s.group_start_time}-{s.group_len}"
@@ -642,24 +685,6 @@ def cycle(dry: bool, st: dict) -> int:
     # start). {"close_all": true} flattens everything we hold.
     if key in st["done_groups"]:
         return 0
-    if _tb:
-        try:
-            q = [x for x in (mt5.positions_get() or ())
-                 if x.ticket in {int(r["ticket"]) for r in st.get("open", [])}]
-            acct = mt5.account_info()
-            rows = [dict(arm=os.environ.get("FIBOSCALPER_TAG", "?"), ticket=p.ticket, side="BUY" if p.type == 0 else "SELL",
-                         lot=p.volume, entry=round(p.price_open, 2), sl=round(p.sl, 2),
-                         tp=round(p.tp, 2), profit=round(p.profit, 2))
-                    for p in q]
-            _tb.pub_account(
-                acct.balance, acct.equity, sum(r["profit"] for r in rows), rows,
-                arm=os.environ.get("FIBOSCALPER_TAG", "?"),
-                account=dict(login=acct.login, server=acct.server, name=acct.name,
-                             currency=acct.currency, leverage=acct.leverage,
-                             trade_mode=getattr(acct, "trade_mode", None)))
-        except Exception as e:
-            log(f"  bridge: {type(e).__name__}: {e}")
-
     if ctl.pop("skip", False):
         st["done_groups"].append(key)
         log(f"  control: SKIP {ser(s.group_start_time)} x{s.group_len} -> next setup")
@@ -763,8 +788,8 @@ def main() -> int:
                     help="setups to take before exiting (default %d)" % CFG["max_trades"])
     ap.add_argument("--trend", action="store_true",
                     help="only take setups the higher TF agrees with. Measured "
-                         "(fill=close): M5 fading with the trend 51.8% win / "
-                         "PF 1.30 / +2,055 USC/day; fading against it 40.9% / "
+                         "(fill=close): M5 fading with the trend 51.8%% win / "
+                         "PF 1.30 / +2,055 USC/day; fading against it 40.9%% / "
                          "PF 0.83 / -2,065. On H1 both sides pay, but aligned "
                          "is PF 2.21 vs 1.30.")
     ap.add_argument("--no-trend", action="store_true",
