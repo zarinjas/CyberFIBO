@@ -267,8 +267,27 @@ BUTTONS = [
     [_b("📊 STATUS", "status"), _b("🎯 NEXT SETUP", "next")],
     [_b("📈 OPEN TRADES", "trades"), _b("❓ WHY NO TRADE", "why")],
     [_b("⏸ PAUSE", "pause"), _b("▶️ RESUME", "resume")],
-    [_b("⏭ SKIP GROUP", "skip")],
+    [_b("⏭ SKIP GROUP", "skip"), _b("⏱ TIMEFRAME", "tf")],
 ]
+
+TF_BUTTONS = [
+    [_b("M5", "tf:M5"), _b("M15", "tf:M15"), _b("H1", "tf:H1"), _b("H4", "tf:H4")],
+    [_b("🔙 kembali", "menu")],
+]
+
+
+def write_request(only: bool = False, **kw):
+    """Tulis state/request.json untuk dibaca scalper pada poll berikutnya.
+
+    `only=True` menggantikan fail sepenuhnya (permintaan ini sahaja), supaya
+    permintaan lama yang belum dibaca tidak bercampur dengan yang baharu.
+    """
+    REQ = ROOT / "state" / "request.json"
+    REQ.parent.mkdir(parents=True, exist_ok=True)
+    d = {} if only else (json.loads(REQ.read_text()) if REQ.exists() else {})
+    d.update(kw)
+    REQ.write_text(json.dumps(d))
+    return True
 
 
 def run_ctl(arg):
@@ -413,6 +432,23 @@ def cmd_bot():
                          else ("❌ perlu password semula ✗ — hantar "
                                "<code>/login %s %s PASSWORD</code>" % (key, v.get("login"))),
                          BUTTONS)
+            elif verb == "tf":
+                send(tok, uid, "⏱ <b>Pilih timeframe fibo</b>\n"
+                               "Bot membaca permintaan ini pada poll berikutnya "
+                               "(30s atau kurang) tanpa restart. Trend filter ikut sama.",
+                     TF_BUTTONS)
+            elif verb.startswith("tf:"):
+                tf = verb[3:].upper()
+                if tf not in ("M5", "M15", "H1", "H4"):
+                    send(tok, uid, "timeframe tidak sah: %s" % tf, BUTTONS)
+                else:
+                    write_request(only=True, tf=tf)
+                    send(tok, uid, "✅ Fibonacci ditukar ke <b>%s</b>\n"
+                                   "Trend filter juga %s.\n"
+                                   "Bot akan guna ini pada kitaran berikutnya (30s atau kurang)."
+                                   % (tf, tf), BUTTONS)
+            elif verb == "menu":
+                send(tok, uid, "Menu:", BUTTONS)
             elif verb in ("status", "next", "trades", "why"):
                 send(tok, uid, "<pre>%s</pre>" % run_ctl(verb).replace("<", "&lt;"), BUTTONS)
             elif verb == "pause":

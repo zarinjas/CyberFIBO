@@ -488,11 +488,9 @@ def fire(s: Setup, lot: float, dry: bool, tp: float | None = None, sent: bool = 
             f"{getattr(r,'comment','')}  sl={sl:.2f} tp={tp:.2f}")
         return None
     if _tb:
-        _tb.event("entry", "SETUP %s group %s x%d  0.0=%.2f 100.0=%.2f  lvl %.1f%%  "
-                           "risk %.0fpt  lot %.2f  ->  SENT @ %.2f  SL %.2f  TP %.2f  "
-                           "ticket=%s"
-                  % (s.side, ser(s.group_start_time), s.group_len, s.p0, s.p100,
-                     s.lvl, rp, lot, r.price, sl, tp, r.ticket))
+        _tb.event("entry", "MASUK %s  lot %.2f  @ %.2f\nSL %.2f   TP %.2f   ticket=%s\n\n%s"
+                  % (s.side, lot, r.price, sl, tp, r.ticket,
+                     _why_entry(s, rp, lot)))
     log(f"  SENT {s.side} {lot:.2f} @ {r.price:.2f}  SL {sl:.2f}  TP {tp:.2f} "
         f" ticket={r.order}  (lvl {s.lvl:.1f}%  risk {s.risk_pts:.0f}pt)")
     return r.order
@@ -527,8 +525,9 @@ def manage(st: dict, dry: bool) -> None:
                     f"+{pos.profit:.0f} >= {CFG['money_tp']:.0f}")
             else:
                 if _tb:
-                    _tb.event("exit", "MONEY-TP %s ticket=%s banked %+.0f USC"
-                              % (rec["side"], rec["ticket"], pos.profit))
+                    _tb.event("exit", "KELUAR %s  banked %+.0f USC  ticket=%s\n\n%s"
+                              % (rec["side"], pos.profit, rec["ticket"],
+                                 _why_exit(rec, pos, "money-tp")))
                 r = close_position(pos, comment="fiboHA money target")
                 log(f"  TP$ {rec['side']} ticket={rec['ticket']} closed "
                     f"retcode={getattr(r,'retcode',None)} banked +{pos.profit:.0f} USC")
@@ -563,7 +562,9 @@ def manage(st: dict, dry: bool) -> None:
                     f"through 0.0 ({rec['p0']:.2f})")
             else:
                 if _tb:
-                    _tb.event("exit", "VOID %s ticket=%s - 0.0 line broken (%+.0f USC)"
+                    _tb.event("exit", "KELUAR %s (BATAL)  %+.0f USC  ticket=%s\n\n%s"
+                              % (rec["side"], q.profit, q.ticket,
+                                 _why_exit(rec, q, "void"))
                               % (rec["side"], rec["ticket"], pos.profit))
                 r = close_position(pos, comment="fiboHA void 0.0 break")
                 log(f"  VOID {rec['side']} ticket={rec['ticket']} closed "
@@ -627,6 +628,61 @@ def _publish(s, d, st):
                                      trade_mode=getattr(acct, "trade_mode", None)))
     except Exception as e:
         log(f"  bridge: {type(e).__name__}: {e}")
+
+
+REQ = CONTROL.with_name("request.json")
+
+
+def _apply_request():
+    """Aurakan permintaan satu-kali daripada butang Telegram (timeframe, dsb).
+
+    Ditulis oleh `traderctl`; dibaca di sini setiap poll supaya kau boleh tukar
+    timeframe hidup tanpa restart bot. Fail dibuang selepas dibaca.
+    """
+    try:
+        if not REQ.exists():
+            return
+        q = json.loads(REQ.read_text())
+        REQ.unlink()
+    except Exception:
+        return
+    tf = str(q.get("tf", "")).upper()
+    if tf in ("M5", "M15", "H1", "H4"):
+        CFG["fibo_tf"] = tf
+        if not CFG.get("_trend_tf_pinned"):
+            CFG["trend_tf"] = tf
+        log(f"  control: timeframe fibo -> {tf} (trend {CFG['trend_tf']})")
+    if "trend" in q:
+        CFG["trend_mode"] = "align" if q["trend"] else "off"
+        log(f"  control: trend -> {CFG['trend_mode']}")
+
+
+def _why_entry(s, rk, lot):
+    """Bahasa manusia: kenapa kita masuk. Susunan = urutan keputusan sebenar."""
+    group = "BEARISH" if s.side == "BUY" else "BULLISH"
+    return (
+        "group %s x%d (%s) -> fade = %s\n"
+        "harga di %.1f%% fibo, zon masuk %.1f-%.1f%%\n"
+        "0.0=%.2f  100.0=%.2f  (arah fade)\n"
+        "trend %s: %s\n"
+        "risiko %.0fpt -> lot %.2f"
+        % (group, s.group_len, ser(s.group_start_time), s.side,
+           s.lvl, CFG["zone"], CFG["gap_zone"], s.p0, s.p100,
+           CFG["fibo_tf"], ("SELARAS (dibenarkan)" if CFG["trend_mode"] != "off" else "TAPIS MATI"),
+           rk, lot))
+
+
+def _why_exit(rec, pos, kind):
+    """Kenapa kita keluar, dan berapa lama kita tahan."""
+    mins = (time.time() - rec["entry_bar_time"]) / 60.0 if rec.get("entry_bar_time") else None
+    head = {"money-tp": "untung cecah sasaran +%.0f USC" % CFG["money_tp"],
+            "void": "setup BATAL - candle tutup lepas garis 0.0",
+            "be": "stop di breakeven, harga balik sentuh",
+            "forced": "ditutup oleh arahan"}.get(kind, "ditutup")
+    return "%s\n%smasuk %.2f -> kini %.2f   lvl %.1f%%" % (
+        head,
+        ("tahan %.0f minit\n" % mins) if mins is not None else "",
+        pos.price_open, pos.price_current, rec.get("lvl", 0))
 
 
 def cycle(dry: bool, st: dict) -> int:
@@ -797,7 +853,9 @@ def main() -> int:
                          "with (doubles setups for the same PF once hi_len is small)")
     ap.add_argument("--poll", type=int, default=CFG["poll_sec"],
                     help="seconds between market checks (default %d)" % CFG["poll_sec"])
-    ap.add_argument("--trend-tf", default=CFG["trend_tf"])
+    ap.add_argument("--trend-tf", default="", help="higher timeframe for the trend "
+                    "filter; empty = same as --fibo-tf, which is what the winning "
+                    "backtests used (H1 fibo + H1 EMA trend)")
     a = ap.parse_args()
     for k in ("risk_pct", "max_lot", "zone", "gap_zone", "sl_buf", "min_ext_atr",
               "reentry", "tp_pts", "magic", "layers", "layer_step", "money_tp", "be_at", "fibo_tf", "tp_pad"):
@@ -817,7 +875,7 @@ def main() -> int:
     elif a.no_trend:
         CFG["trend_mode"] = "off"
     CFG["rescale"] = 0 if a.no_rescale else 1
-    CFG["trend_tf"] = a.trend_tf
+    CFG["trend_tf"] = a.trend_tf or CFG["fibo_tf"]      # winning study: same TF
     CFG["split"] = a.split
     CFG["max_trades"] = a.max_trades
     CFG["poll_sec"] = a.poll
@@ -846,6 +904,7 @@ def main() -> int:
     st = {"done_groups": [], "open": []} if a.dry_run else load_state()
     n = 0
     while True:
+        _apply_request()             # Telegram timeframe/trend request, if any
         manage(st, a.dry_run)        # VOID closes, stop checks on open legs
         n += cycle(a.dry_run, st)
         if not a.dry_run:            # a dry run must never consume a setup
