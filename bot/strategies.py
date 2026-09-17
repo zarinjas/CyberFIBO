@@ -24,6 +24,7 @@ FILE = ROOT / "state" / "strategy.json"
 ACTIVE = "ACTIVE"
 RESEARCH_ONLY = "RESEARCH_ONLY"
 DISABLED = "DISABLED"
+DEMO_ONLY = "DEMO_ONLY"      # boleh dagang pada DEMO sahaja (uji eksekusi)
 
 REGISTRY = {
     "FIBO_V1": dict(
@@ -44,6 +45,13 @@ REGISTRY = {
         desc="EMA74 - belum dilaksana",
         note="Menunggu spec + backtest. Tidak boleh trade.",
         aliases=("ema74", "ema", "ema74_v1"),
+    ),
+    "STOP_LADDER": dict(
+        status=DEMO_ONLY, magic=9200,
+        desc="Stop Ladder lot-berganda, cap 0.64 - ujian EKSEKUSI",
+        note="Tiada edge terbukti. Demo sahaja: semak slippage stop, kelewatan, "
+             "ketepatan paras, pemadaman pending.",
+        aliases=("ladder", "stop_ladder", "ladder_v1"),
     ),
 }
 
@@ -95,18 +103,23 @@ def info(sid: str):
     return REGISTRY.get(sid, {})
 
 
-def tradable(sid: str) -> bool:
-    """Hanya status ACTIVE boleh membuka trade hidup."""
-    return info(sid).get("status") == ACTIVE
+def tradable(sid: str, is_demo: bool = None) -> bool:
+    """ACTIVE sentiasa; DEMO_ONLY hanya bila akaun memang demo."""
+    st = info(sid).get("status")
+    if st == ACTIVE:
+        return True
+    if st == DEMO_ONLY:
+        return bool(is_demo)
+    return False
 
 
-def guard(sid: str = None):
-    """Hentikan bot jika strategy bukan ACTIVE. Dipanggil pada permulaan bot."""
+def guard(sid: str = None, is_demo: bool = None):
+    """Hentikan bot jika strategy tidak dibenarkan. Dipanggil pada permulaan bot."""
     sid = sid or os.environ.get("STRATEGY_ID", DEFAULT)
     d = info(sid)
     if not d:
         raise SystemExit("STRATEGY GUARD: id tidak dikenali: %s" % sid)
-    if not tradable(sid):
+    if not tradable(sid, is_demo):
         raise SystemExit(
             "STRATEGY GUARD: %s status %s - dilarang buka trade hidup.\n  %s"
             % (sid, d.get("status"), d.get("note", "")))
