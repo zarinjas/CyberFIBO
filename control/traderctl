@@ -37,6 +37,12 @@ try:
     import strategies as STRAT
 except Exception:
     STRAT = None
+try:
+    import brokers as BROK
+except Exception:
+    BROK = None
+
+BOT_DIR = pathlib.Path(__file__).resolve().parent.parent / "bot"
 
 # Windows Server CN ships with codepage GBK, so printing the button glyphs
 # (arrows, pause bars, status dots) raises UnicodeEncodeError and the whole
@@ -56,6 +62,69 @@ EVENTS = ROOT / "events.jsonl"
 ENVF = ROOT / ".env"
 BROKERS = STATE / "brokers.json"
 LOGIN_SH = ROOT / "bin" / "mt5_login.sh"
+
+
+SWITCH_REQ = STATE / "switch.json"
+SWITCH_RES = STATE / "switch_result.json"
+
+
+def broker_line_short():
+    """Satu baris status broker aktif - dipakai STATUS dan notifikasi."""
+    if not BROK:
+        return "  broker   : (brokers.py tiada)"
+    b = BROK.info(BROK.current())
+    return "  broker   : %s / %s (%s)" % (b.get("name", "?"), b.get("pair", "?"),
+                                         b.get("server", "?"))
+
+
+def broker_label():
+    if not BROK:
+        return ""
+    b = BROK.info(BROK.current())
+    return "%s/%s" % (b.get("name", "?"), b.get("pair", "?"))
+
+
+def broker_menu():
+    if not BROK:
+        return []
+    cur = BROK.current()
+    return [[_b(("%s %s / %s" % (BROK.ICON.get(x, ""), BROK.BROKERS[x]["name"],
+                                 BROK.BROKERS[x]["pair"]))
+                 + ("  <- aktif" if x == cur else ""), "broker:" + x)]
+            for x in BROK.BROKERS]
+
+
+def broker_switch(word):
+    """Hantar permintaan tukar broker. Pulangkan mesej, atau None kalau dihantar."""
+    if not BROK:
+        return "brokers.py tidak dijumpai"
+    slug = BROK.resolve(word)
+    if not slug:
+        return "broker tidak dikenali: %s" % word
+    if slug == BROK.current():
+        return "sudah pada %s (%s)" % (BROK.info(slug)["name"], BROK.info(slug)["pair"])
+    if not BROK.password(slug):
+        return ("broker <b>%s</b> belum ada kata laluan.\n\n"
+                "Hantar: <code>/brokerkey %s &lt;kata_laluan&gt;</code>"
+                % (BROK.info(slug)["name"], slug))
+    STATE.mkdir(parents=True, exist_ok=True)
+    SWITCH_REQ.write_text(json.dumps({"slug": slug, "when": int(time.time())}),
+                          encoding="utf-8")
+    try:
+        subprocess.Popen([sys.executable, str(BOT_DIR / "mt5_switch.py")],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    return None
+
+
+def broker_result():
+    """Hasil tukar broker terakhir kalau masih segar (<10 min)."""
+    try:
+        d = json.loads(SWITCH_RES.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return d if time.time() - d.get("when", 0) <= 600 else None
 
 
 def env():
@@ -201,6 +270,7 @@ def cmd_status():
     print("  keadaan  : %s" % ("⏸ PAUSE" if c.get("paused") else "▶️ JALAN"))
     print(acct_line(d))
     print(strategy_line_short())
+    print(broker_line_short())
     if d.get("synthetic"):
         print("  sumber   : traderctl sim (bukan broker)")
     print("  balance  : %s USC" % d.get("balance"))
@@ -354,6 +424,7 @@ BUTTONS = [
     [_b("⏸ PAUSE", "pause"), _b("▶️ RESUME", "resume")],
     [_b("⏭ SKIP GROUP", "skip"), _b("⏱ TIMEFRAME", "tf")],
     [_b("\U0001f3af STRATEGY", "strategy"), _b("\U0001f4b0 LOT", "risk")],
+    [_b("\U0001f504 BROKER", "broker")],
     [_b("\U0001f9f6 ROPE LOT", "rope")],
 ]
 
@@ -530,6 +601,31 @@ def cmd_bot():
                          else ("\u26d4 %s" % res), BUTTONS)
                 continue
             # -------------------------------------------------------------
+            # ---- /broker [slug] | /brokerkey <slug> <pw> -----------------
+            if not cq and txt.startswith(("/brokerkey", "/broker")):
+                parts = raw_txt.split()
+                if parts[0] == "/brokerkey" and len(parts) >= 3:
+                    slug = BROK.resolve(parts[1]) if BROK else None
+                    if not slug:
+                        send(tok, uid, "broker tidak dikenali: %s" % parts[1], BUTTONS)
+                    else:
+                        BROK.save_password(slug, parts[2])
+                        send(tok, uid, "kunci %s disimpan (kata laluan TIDAK dilog)"
+                             % BROK.info(slug)["name"], BUTTONS)
+                    continue
+                if parts[0] == "/broker":
+                    word = parts[1] if len(parts) > 1 else ""
+                    if not word:
+                        send(tok, uid, "<b>Pilih broker</b>\n"
+                                       "Satu broker aktif pada satu masa.\n\n<pre>%s</pre>"
+                             % ("\n".join(BROK.listing()).replace("<", "&lt;")
+                                if BROK else "brokers.py tiada"),
+                             broker_menu() + [[_b("kembali", "menu")]])
+                    else:
+                        r = broker_switch(word)
+                        send(tok, uid, r if r else "menukar... (lihat STATUS ~15s)", BUTTONS)
+                    continue
+
             # ---- /ropec <min> [max] | /ropelot <min> [max] --------------
             if not cq and txt.startswith(("/ropec", "/ropelot", "/rope")):
                 parts = raw_txt.split()
@@ -623,6 +719,17 @@ def cmd_bot():
                                    "Trend filter juga %s.\n"
                                    "Bot akan guna ini pada kitaran berikutnya (30s atau kurang)."
                                    % (tf, tf), BUTTONS)
+            elif verb == "broker" or verb.startswith("broker:"):
+                if verb == "broker":
+                    send(tok, uid, "<b>Pilih broker</b>\n"
+                                   "Satu broker aktif pada satu masa.\n"
+                                   "Posisi mesti FLAT dahulu.\n\n<pre>%s</pre>"
+                         % ("\n".join(BROK.listing()).replace("<", "&lt;")
+                            if BROK else "brokers.py tiada"),
+                         broker_menu() + [[_b("kembali", "menu")]])
+                else:
+                    r = broker_switch(verb.split(":", 1)[1])
+                    send(tok, uid, r if r else "menukar broker... (~15s)", BUTTONS)
             elif verb == "strategy":
                 if not STRAT:
                     send(tok, uid, "registry tidak dijumpai", BUTTONS)

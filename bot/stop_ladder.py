@@ -35,12 +35,52 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import MetaTrader5 as mt5                      # noqa: E402
 
+import numpy as np                             # noqa: E402
 import mt5lib                                  # noqa: E402
 import strategies                              # noqa: E402
 import traderbridge as bridge                  # noqa: E402
 
-SYM = "XAUUSDc"
-TP, SL = 6.00, 4.00            # harga, bukan point (1 pip = 0.10 pada spec)
+SYM = "XAUUSDc"                # ditetapkan semula oleh set_symbol() (--symbol / broker aktif)
+PT = 0.01                      # saiz point simbol; dikemas kini oleh set_symbol()
+TP, SL = 6.00, 4.00            # dalam HARGA, bukan point (emas: 600/400 point)
+
+
+def _broker_pair():
+    """Pasangan simbol broker aktif (brokers.py). Emas kalau tak dapat dibaca."""
+    try:
+        import brokers as B
+        return B.pair()
+    except Exception:                                        # noqa: BLE001
+        return SYM
+
+
+def set_symbol(sym, tp=None, sl=None):
+    """Sesuaikan SYM/PT/TP/SL dengan simbol sebenar.
+
+    TP/SL emas (6.00/4.00) tidak bermakna pada instrumen lain. Kalau tidak
+    diberi, ia diterbitkan dari ATR H1 (nisbah 1.5:1) supaya boleh dipindah
+    antara broker tanpa meneka angka.
+    """
+    global SYM, PT, TP, SL
+    si = mt5.symbol_info(sym)
+    if si is None:
+        raise SystemExit("simbol %s tiada pada broker ini" % sym)
+    SYM, PT = sym, float(si.point or 0.01)
+    if tp is not None:
+        TP = float(tp)
+    if sl is not None:
+        SL = float(sl)
+    if tp is None or sl is None:
+        r = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_H1, 0, 400)
+        if r is not None and len(r) > 30:
+            h, l, c = r["high"], r["low"], r["close"]
+            tr = np.maximum(h[1:] - l[1:],
+                            np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
+            atr = float(np.median(tr))
+            if atr > 0:
+                TP = TP if tp is not None else round(1.5 * atr, 2)
+                SL = SL if sl is not None else round(atr, 2)
+    return SYM, PT, TP, SL
 LEVEL_CAP = 7
 ROOT = Path(os.environ.get("TRADER_ROOT", "C:/cyberfibo"))
 STATE = ROOT / "state" / "ladder.json"
@@ -112,7 +152,7 @@ class Ladder:
             rec["level"] = round(level, 2)
             rec["fill"] = round(fill, 2) if fill else None
             if fill:
-                rec["slippage_pt"] = round((fill - level) / 0.01, 1)
+                rec["slippage_pt"] = round((fill - level) / PT, 1)
                 rec["accuracy_pip"] = round(abs(fill - level) / 0.10, 2)
         log_exec(rec)
         return r
@@ -131,7 +171,7 @@ class Ladder:
         t = mt5.symbol_info_tick(SYM)
         if not t or t.ask <= 0 or t.bid <= 0:
             return 0.0
-        return round((t.ask - t.bid) / 0.01, 1)
+        return round((t.ask - t.bid) / PT, 1)
 
     def place_pendings(self, direction: int, entry: float, lot: float, level: int = 1):
         """RULE 2. Pulangkan senarai harga yang BERJAYA dipasang.
@@ -262,6 +302,10 @@ def main():
     ap.add_argument("--base-lot", type=float, default=0.01)
     ap.add_argument("--max-lot", type=float, default=0.64)
     ap.add_argument("--magic", type=int, default=9200)
+    ap.add_argument("--symbol", default="",
+                    help="simbol; kosong = ikut broker aktif dalam brokers.py")
+    ap.add_argument("--tp", type=float, default=None, help="TP dalam HARGA")
+    ap.add_argument("--sl", type=float, default=None, help="SL dalam HARGA")
     ap.add_argument("--threshold", type=float, default=0.4)
     ap.add_argument("--poll", type=int, default=3)
     ap.add_argument("--level-cap", type=int, default=0,
@@ -271,7 +315,11 @@ def main():
 
     if not mt5lib.connect():
         sys.exit("MT5 gagal disambung")
+    sym = a.symbol or _broker_pair()
+    set_symbol(sym, a.tp, a.sl)
     mt5.symbol_select(SYM, True)
+    bridge.event("info", "simbol %s | point %s | TP %.2f SL %.2f"
+                 % (SYM, PT, TP, SL))
 
     # RULE 1 spec kata "tiada posisi & tiada pending" pada XAUUSD. Pada akaun yang
     # dikongsi dengan FIBO_V1, itu akan menyekat ladder hampir selamanya. Jadi
@@ -361,7 +409,7 @@ def main():
                 if st.get("entry"):
                     log_exec(dict(kind="fill_slippage", level=round(float(st["entry"]), 2),
                                   fill=round(nppx, 2),
-                                  slippage_pt=round((nppx - float(st["entry"])) / 0.01, 1),
+                                  slippage_pt=round((nppx - float(st["entry"])) / PT, 1),
                                   accuracy_pip=round(abs(nppx - float(st["entry"])) / 0.10, 2)))
                 L.delete_others()
                 lvl = int(st.get("level", 1)) + 1
