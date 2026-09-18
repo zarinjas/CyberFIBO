@@ -126,8 +126,22 @@ class Ladder:
                    type_time=mt5.ORDER_TIME_GTC, type_filling=mt5.ORDER_FILLING_FOK)
         return self.send(req, "market_open", px)
 
+    def spread_pts(self) -> float:
+        """Spread semasa dalam point. 0 kalau tiada tick."""
+        t = mt5.symbol_info_tick(SYM)
+        if not t or t.ask <= 0 or t.bid <= 0:
+            return 0.0
+        return round((t.ask - t.bid) / 0.01, 1)
+
     def place_pendings(self, direction: int, entry: float, lot: float, level: int = 1):
-        """RULE 2. Pulangkan senarai harga yang BERJAYA dipasang."""
+        """RULE 2. Pulangkan senarai harga yang BERJAYA dipasang.
+
+        Spread: harga `entry` yang kita guna ialah harga ISIAN (BID untuk SELL,
+        ASK untuk BUY). Pending baharu mesti dipasang dari harga yang BETUL
+        untuk arahnya, jika tidak kedua-dua pending boleh terisi serentak bila
+        spread melebar — dan kita dapat dua entry bertentangan pada masa sama.
+        Offset kecil ke sisi selamat dipakai di sini.
+        """
         if self.level_cap and level >= self.level_cap:
             log_exec(dict(kind="level_cap", level=level, cap=self.level_cap))
             return []
@@ -135,12 +149,16 @@ class Ladder:
         if round(n, 2) > self.max_lot + 1e-9:
             log_exec(dict(kind="no_pending_cap", lot=lot, n=round(n, 2), max_lot=self.max_lot))
             return []
+        sp = self.spread_pts()
         if direction > 0:
+            # BUY: masuk di ASK. BUY_STOP mesti >= ask; SELL_STOP jauh di bawah.
             specs = [(mt5.ORDER_TYPE_BUY_STOP, entry + TP, entry + 2.00, entry + 12.00),
                      (mt5.ORDER_TYPE_SELL_STOP, entry - SL, entry, entry - 10.00)]
         else:
             specs = [(mt5.ORDER_TYPE_SELL_STOP, entry - TP, entry - 2.00, entry - 12.00),
                      (mt5.ORDER_TYPE_BUY_STOP, entry + SL, entry, entry + 10.00)]
+        log_exec(dict(kind="pending_spread", direction=direction, spread_pts=sp,
+                      gap=round(TP + SL, 2), note="jarak dua pending = TP+SL"))
         made = []
         for otype, px, sl, tp in specs:
             req = dict(action=mt5.TRADE_ACTION_PENDING, symbol=SYM, volume=round(n, 2),
@@ -168,12 +186,14 @@ class Ladder:
 REQ = ROOT / "state" / "request.json"
 
 
-def _apply_request():
+def _apply_request(lad) -> None:
     """Had lot daripada butang Telegram (ROPE LOT): rope_min / rope_max.
+
+    `lad` ialah objek Ladder (dihantar secara eksplisit — jangan guna
+    pemboleh ubah global, ia belum wujud semasa poll pertama).
 
     Ladder gandakan lot setiap aras (N = 2L), jadi lot TIDAK dikira dari
     % risiko. Had bawah = lot mula, had atas = siling ganda.
-    Ditulis oleh `traderctl`; dibaca setiap poll; fail dibuang selepas dibaca.
     """
     try:
         if not REQ.exists():
@@ -203,11 +223,11 @@ def _apply_request():
                           min=vmin, max=vmax))
             return
         if vmin is not None:
-            L.base_lot = vmin
+            lad.base_lot = vmin
             log_exec(dict(kind="control_rope_min", lot=vmin))
             print("  control: rope MINIMUM lot -> %.2f" % vmin, flush=True)
         if vmax is not None:
-            L.max_lot = vmax
+            lad.max_lot = vmax
             log_exec(dict(kind="control_rope_max", lot=vmax))
             print("  control: rope MAKSIMUM lot -> %.2f" % vmax, flush=True)
     except (TypeError, ValueError):
@@ -270,7 +290,7 @@ def main():
 
     while True:
         try:
-            _apply_request()
+            _apply_request(L)
             pos, ords = L.positions(), L.orders()
             st = load_state()
 
@@ -367,7 +387,11 @@ def main():
                 bridge.event("exit", "LADDER TAMAT (RULE 4) — %d aras. Pending dipadam. "
                                      "Perlu kelulusan Hafiz untuk mula semula." % st.get("level", 0))
         except Exception as ex:
+            # JANGAN telan senyap: ralat mesti kelihatan dalam stdout DAN log,
+            # sebab ralat senyap dalam try/except pernah melumpuhkan kawalan
+            # Telegram tanpa sesiapa perasan.
             log_exec(dict(kind="error", error=str(ex)[:300]))
+            print("  RALAT: %s" % str(ex)[:200], file=sys.stderr, flush=True)
         time.sleep(a.poll)
 
 
