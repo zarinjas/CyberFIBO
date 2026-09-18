@@ -152,13 +152,18 @@ def cmd_strategy():
     print("  lot  : /lot 2  (risiko %; lot besar bila naik)")
 
 
-def strategy_switch(word):
-    """Tukar strategy aktif. Menolak jika posisi terbuka (elak campur)."""
+def strategy_switch(word, is_demo=None):
+    """Tukar kaedah ENTRY aktif. Hanya satu berjalan pada satu masa.
+
+    Bukan sekadar label: bot kaedah baharu dihidupkan, yang lain dimatikan,
+    supaya tiada dua kaedah buka trade serentak. Menolak jika posisi terbuka
+    (elak posisi bercampur antara kaedah).
+    """
     if not STRAT:
         return "registry tidak dijumpai"
     sid = STRAT.resolve(word)
     if not sid:
-        return ("strategy tidak dikenali: %s\n  guna: fibo | chain | ema74" % word)
+        return ("kaedah tidak dikenali: %s\n  guna: fibo | ladder" % word)
     cur = STRAT.active()
     if sid == cur:
         return "sudah aktif: %s (%s)" % (sid, STRAT.info(sid).get("status"))
@@ -166,14 +171,18 @@ def strategy_switch(word):
     if n:
         return ("DITOLAK - %d posisi masih terbuka.\n"
                 "  Tutup dahulu (butang CLOSE ALL) supaya posisi tidak bercampur "
-                "antara strategy." % n)
+                "antara kaedah." % n)
     d = STRAT.info(sid)
-    if d.get("status") != STRAT.ACTIVE:
-        # dibenarkan menukar KE strategy bukan-aktif? Tidak - itu akan menipu
-        # pengguna kerana bot akan menolak untuk berjalan.
+    st = d.get("status")
+    if st not in (STRAT.ACTIVE, STRAT.DEMO_ONLY):
         return ("DITOLAK - %s berstatus %s.\n  %s\n"
-                "  Strategy bukan-ACTIVE tidak boleh membuka trade hidup."
-                % (sid, d.get("status"), d.get("note", "")))
+                "  Kaedah ini tidak boleh membuka trade."
+                % (sid, st, d.get("note", "")))
+    if st == STRAT.DEMO_ONLY and is_demo is False:
+        return ("DITOLAK - %s hanya untuk DEMO (akaun ini bukan demo)." % sid)
+    ok, msg = STRAT.switch_runner(sid)
+    if not ok:
+        return "DITOLAK - %s" % msg
     STRAT.set_active(sid)
     return "ditukar ke %s" % sid
 
@@ -618,17 +627,24 @@ def cmd_bot():
                 if not STRAT:
                     send(tok, uid, "registry tidak dijumpai", BUTTONS)
                 else:
-                    kb = [[_b("%s %s" % (STRAT.ICON.get(STRAT.info(sid).get("status"), ""), sid),
-                              "strategy:" + sid)] for sid in STRAT.REGISTRY]
+                    cur = STRAT.active()
+                    kb = [[_b(("%s %s" % (STRAT.ICON.get(STRAT.info(s)["status"], ""),
+                                          "FIBO" if s == "FIBO_V1" else "LADDER"))
+                              + ("  <- aktif" if s == cur else ""),
+                              "strategy:" + s)]
+                          for s in ("FIBO_V1", "STOP_LADDER")]
                     kb.append([_b("\U0001f519 kembali", "menu")])
-                    send(tok, uid, "<pre>%s</pre>"
-                         % run_ctl("strategy").replace("<", "&lt;"), kb)
+                    send(tok, uid, "\U0001f3af <b>Pilih kaedah ENTRY</b>\n"
+                                   "Hanya SATU berjalan pada satu masa.\n\n"
+                                   "<pre>%s</pre>"
+                                   % run_ctl("strategy").replace("<", "&lt;"), kb)
             elif verb.startswith("strategy:"):
                 sid = verb.split(":", 1)[1]
                 res = strategy_switch(sid)
-                send(tok, uid, ("\u2705 <b>Strategy Changed</b>\n\nCurrent Strategy:\n<b>%s</b>"
-                                % STRAT.active()) if res.startswith("ditukar")
-                     else ("\u26d4 %s" % res), BUTTONS)
+                send(tok, uid, ("\u2705 <b>Kaedah ditukar</b>\n\n"
+                                "Entry sekarang: <b>%s</b>"
+                                % ("FIBO" if STRAT.active() == "FIBO_V1" else "LADDER"))
+                     if res.startswith("ditukar") else ("\u26d4 %s" % res), BUTTONS)
             elif verb == "risk":
                 send(tok, uid, "💰 <b>Saiz lot (risiko %)</b>\n"
                                "Lot dikira dari jarak stop dan baki akaun:\n"

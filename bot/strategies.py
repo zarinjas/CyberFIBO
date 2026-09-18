@@ -14,6 +14,8 @@ hidup secara tidak sengaja.
 """
 import json
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -148,3 +150,52 @@ def listing():
     for sid in REGISTRY:
         out.append(line(sid))
     return out
+
+# --------------------------------------------------------------- runner control
+# Setiap kaedah dipandu oleh SATU scheduled task di VPS Windows. Menukar kaedah
+# bermakna menghidupkan task kaedah baharu dan mematikan yang lain, supaya
+# TIADA dua kaedah membuka trade serentak.
+RUNNER = {
+    "FIBO_V1":     dict(start="CyberFIBO-ScalperX", stop=("CyberFIBO-Ladder",)),
+    "STOP_LADDER": dict(start="CyberFIBO-Ladder",   stop=("CyberFIBO-ScalperX",)),
+}
+# Task yang mesti dibiarkan berjalan (kawalan Telegram + arm lama).
+SELALU = ("CyberFIBO-CtlBot", "CyberFIBO-CtlNotify")
+
+
+def _task(cmd: str, name: str):
+    """Jalankan schtasks. Pulangkan (ok, mesej)."""
+    try:
+        r = subprocess.run(["schtasks", "/" + cmd, "/tn", name],
+                           capture_output=True, text=True, timeout=60)
+        return r.returncode == 0, (r.stdout or r.stderr or "").strip()[:160]
+    except Exception as e:                       # noqa: BLE001
+        return False, str(e)[:160]
+
+
+def switch_runner(sid: str):
+    """Hidupkan runner `sid`, matikan yang lain. Pulangkan (ok, mesej).
+
+    Pada mesin bukan-Windows (ujian), pulangkan ok tanpa menyentuh apa-apa
+    supaya logik boleh diuji tanpa mengubah task sebenar.
+    """
+    if os.name != "nt":
+        return True, "bukan Windows: lompat kawalan task"
+    r = RUNNER.get(sid)
+    if not r:
+        return True, "tiada runner didaftarkan untuk %s" % sid
+    msgs = []
+    ok, m = _task("end", r["start"])
+    if not ok and "cannot find" not in m.lower() and "tidak" not in m.lower():
+        msgs.append("mula %s: %s" % (r["start"], m))
+        return False, "; ".join(msgs)
+    ok2, m2 = _task("run", r["start"])
+    msgs.append("%s -> %s" % (r["start"], "jalan" if ok2 else "GAGAL: " + m2))
+    if not ok2:
+        return False, "; ".join(msgs)
+    for other in r["stop"]:
+        if other in SELALU:
+            continue
+        ok3, m3 = _task("end", other)
+        msgs.append("%s -> %s" % (other, "berhenti" if ok3 else "sudah mati"))
+    return True, "; ".join(msgs)
