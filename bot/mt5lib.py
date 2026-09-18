@@ -17,7 +17,15 @@ import numpy as np
 
 MT5_PATH_DEFAULT = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 
-SYMBOL = "XAUUSDc"          # the only tradeable XAU symbol (XAUUSD is close-only)
+# Simbol: ikut broker AKTIF (bot/brokers.py) supaya bot yang sama boleh
+# berdagang instrumen lain tanpa kod baharu. MT5_SYMBOL (env) menang, dan
+# kalau registry tiada kita jatuh balik ke emas - jadi tingkah laku lama
+# (broker=tradingpro) TIDAK berubah.
+try:
+    import brokers as _BROK
+    SYMBOL = os.environ.get("MT5_SYMBOL") or _BROK.pair()
+except Exception:                                            # noqa: BLE001
+    SYMBOL = os.environ.get("MT5_SYMBOL") or "XAUUSDc"
 M5, M15 = mt5.TIMEFRAME_M5, mt5.TIMEFRAME_M15
 MYT = ZoneInfo("Asia/Kuala_Lumpur")
 
