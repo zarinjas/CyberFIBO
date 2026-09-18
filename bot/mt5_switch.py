@@ -92,13 +92,23 @@ def switch(slug):
         time.sleep(3)
 
         # ---- tukar akaun ------------------------------------------------
-        ok = mt5.login(int(b["login"]), password=pw, server=b["server"])
-        if not ok:
-            return False, "mt5.login gagal: %s" % (mt5.last_error(),), detail
-        a = mt5.account_info()
+        # mt5.login() TIDAK boleh dipercayai sebagai penentu kejayaan: ia
+        # boleh pulang False walaupun pertukaran BERJAYA, dan account_info()
+        # boleh pulang None seketika selepas pertukaran. Sahkan melalui
+        # account_info() dengan cubaan berulang.
+        ret = mt5.login(int(b["login"]), password=pw, server=b["server"])
+        a = None
+        for tries in range(12):
+            a = mt5.account_info()
+            if a and str(a.login) == str(b["login"]):
+                break
+            time.sleep(5)
         if not a or str(a.login) != str(b["login"]):
-            return False, ("login tidak padan: dapat %s, jangka %s"
-                           % (getattr(a, "login", "?"), b["login"])), detail
+            return False, ("login tidak dapat disahkan selepas %ds "
+                           "(pulangan login=%s, dapat %s, jangka %s)"
+                           % (tries * 5, ret, getattr(a, "login", "?"),
+                              b["login"])), detail
+        detail["login_ret"] = ret      # direkod: False pun boleh berjaya
         detail.update(akaun=a.login, server=a.server, baki=a.balance,
                       mata_wang=a.currency)
 
