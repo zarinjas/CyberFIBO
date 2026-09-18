@@ -182,20 +182,34 @@ def _apply_request():
         REQ.unlink()
     except Exception:
         return
-    mn, mx = q.get("rope_min"), q.get("rope_max")
     try:
+        mn, mx = q.get("rope_min"), q.get("rope_max")
+        # Sahkan KEDUA-DUA dahulu. Kalau salah satu cacat, tolak
+        # permintaan itu SEPENUHNYA — jangan pakai separuh, nanti had
+        # jadi bercanggah (min 0.01 dengan max 0.64 sedangkan diminta 0.16).
+        vmin = vmax = None
         if mn is not None:
-            v = round(float(mn), 2)
-            if 0.01 <= v <= 5.0:
-                L.base_lot = v
-                log_exec(dict(kind="control_rope_min", lot=v))
-                print("  control: rope MINIMUM lot -> %.2f" % v, flush=True)
+            vmin = round(float(mn), 2)
+            if not (0.01 <= vmin <= 5.0):
+                log_exec(dict(kind="rope_reject", which="min", value=str(mn)))
+                return
         if mx is not None:
-            v = round(float(mx), 2)
-            if 0.01 <= v <= 5.0:
-                L.max_lot = v
-                log_exec(dict(kind="control_rope_max", lot=v))
-                print("  control: rope MAKSIMUM lot -> %.2f" % v, flush=True)
+            vmax = round(float(mx), 2)
+            if not (0.01 <= vmax <= 5.0):
+                log_exec(dict(kind="rope_reject", which="max", value=str(mx)))
+                return
+        if vmin is not None and vmax is not None and vmin > vmax:
+            log_exec(dict(kind="rope_reject", which="min>max",
+                          min=vmin, max=vmax))
+            return
+        if vmin is not None:
+            L.base_lot = vmin
+            log_exec(dict(kind="control_rope_min", lot=vmin))
+            print("  control: rope MINIMUM lot -> %.2f" % vmin, flush=True)
+        if vmax is not None:
+            L.max_lot = vmax
+            log_exec(dict(kind="control_rope_max", lot=vmax))
+            print("  control: rope MAKSIMUM lot -> %.2f" % vmax, flush=True)
     except (TypeError, ValueError):
         pass
 
