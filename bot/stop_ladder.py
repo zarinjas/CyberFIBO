@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import time
+import json                                    # noqa: E402
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -164,6 +165,41 @@ class Ladder:
         return len(after) == 0
 
 
+REQ = ROOT / "state" / "request.json"
+
+
+def _apply_request():
+    """Had lot daripada butang Telegram (ROPE LOT): rope_min / rope_max.
+
+    Ladder gandakan lot setiap aras (N = 2L), jadi lot TIDAK dikira dari
+    % risiko. Had bawah = lot mula, had atas = siling ganda.
+    Ditulis oleh `traderctl`; dibaca setiap poll; fail dibuang selepas dibaca.
+    """
+    try:
+        if not REQ.exists():
+            return
+        q = json.loads(REQ.read_text())
+        REQ.unlink()
+    except Exception:
+        return
+    mn, mx = q.get("rope_min"), q.get("rope_max")
+    try:
+        if mn is not None:
+            v = round(float(mn), 2)
+            if 0.01 <= v <= 5.0:
+                L.base_lot = v
+                log_exec(dict(kind="control_rope_min", lot=v))
+                print("  control: rope MINIMUM lot -> %.2f" % v, flush=True)
+        if mx is not None:
+            v = round(float(mx), 2)
+            if 0.01 <= v <= 5.0:
+                L.max_lot = v
+                log_exec(dict(kind="control_rope_max", lot=v))
+                print("  control: rope MAKSIMUM lot -> %.2f" % v, flush=True)
+    except (TypeError, ValueError):
+        pass
+
+
 def trend_ok(threshold: float):
     """Tapis trend: M5 EMA20/50, kuat = |EMAf-EMAs|/ATR. Pulangkan (ok, arah)."""
     r = mt5.copy_rates_from_pos(SYM, mt5.TIMEFRAME_M5, 0, 400)
@@ -212,14 +248,15 @@ def main():
     strategies.guard("STOP_LADDER", is_demo=is_demo)
     L = Ladder(a.magic, a.base_lot, a.max_lot, bool(a.doubling), a.dry, a.level_cap)
     acc = info()
-    bridge.event("info", "Stop Ladder DEMO mula | versi %s | lot %.2f | magic %d | %s %.2f %s"
-                 % ("B(berganda)" if a.doubling else "A(tetap)", a.base_lot, a.magic,
+    bridge.event("info", "Stop Ladder DEMO mula | versi %s | lot %.2f-%.2f | magic %d | %s %.2f %s"
+                 % ("B(berganda)" if a.doubling else "A(tetap)", a.base_lot, a.max_lot, a.magic,
                     acc.login, acc.balance, acc.currency))
-    print("  mula: versi %s · lot %.2f · magic %d"
-          % ("B" if a.doubling else "A", a.base_lot, a.magic))
+    print("  mula: versi %s · lot %.2f-%.2f · magic %d"
+          % ("B" if a.doubling else "A", a.base_lot, a.max_lot, a.magic))
 
     while True:
         try:
+            _apply_request()
             pos, ords = L.positions(), L.orders()
             st = load_state()
 

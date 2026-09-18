@@ -344,7 +344,8 @@ BUTTONS = [
     [_b("📈 OPEN TRADES", "trades"), _b("❓ WHY NO TRADE", "why")],
     [_b("⏸ PAUSE", "pause"), _b("▶️ RESUME", "resume")],
     [_b("⏭ SKIP GROUP", "skip"), _b("⏱ TIMEFRAME", "tf")],
-    [_b("\U0001f3af STRATEGY", "strategy"), _b("💰 LOT", "risk")],
+    [_b("\U0001f3af STRATEGY", "strategy"), _b("\U0001f4b0 LOT", "risk")],
+    [_b("\U0001f9f6 ROPE LOT", "rope")],
 ]
 
 TF_BUTTONS = [
@@ -355,6 +356,16 @@ TF_BUTTONS = [
 RISK_BUTTONS = [
     [_b("1%", "risk:1"), _b("2%", "risk:2"), _b("4%", "risk:4"), _b("8%", "risk:8")],
     [_b("12%", "risk:12"), _b("🔙 kembali", "menu")],
+]
+
+# Stop Ladder (teknik rope): lot ditetapkan terus (bukan % risiko), sebab
+# setiap aras menggandakan lot. Jadi kawal had bawah dan atasnya.
+ROPE_BUTTONS = [
+    [_b("0.01", "rope:min:0.01"), _b("0.02", "rope:min:0.02"),
+     _b("0.04", "rope:min:0.04"), _b("0.08", "rope:min:0.08")],
+    [_b("0.16", "rope:max:0.16"), _b("0.32", "rope:max:0.32"),
+     _b("0.64", "rope:max:0.64"), _b("1.28", "rope:max:1.28")],
+    [_b("\U0001f519 kembali", "menu")],
 ]
 
 
@@ -386,6 +397,28 @@ def set_risk(tok, uid, v):
                    "Lot dikira dari jarak stop + baki akaun.\n"
                    "Bot guna ini pada kitaran berikutnya (30s atau kurang)." % r,
          BUTTONS)
+
+
+def set_rope(tok, uid, which, v):
+    """Had lot Stop Ladder (teknik rope). which = 'min' | 'max'.
+
+    Ladder menggandakan lot setiap aras (N = 2L), jadi lot TIDAK dikira dari
+    % risiko macam scalper. Kawal terus nilai bawah dan atasnya.
+    """
+    try:
+        x = round(float(v), 2)
+    except (TypeError, ValueError):
+        x = 0.0
+    if not (0.01 <= x <= 5.0):
+        send(tok, uid, "\u26d4 lot tidak sah: %s (guna 0.01 - 5.00)" % v, ROPE_BUTTONS)
+        return
+    write_request(only=True, **{"rope_" + which: x})
+    nama = "MINIMUM" if which == "min" else "MAKSIMUM"
+    send(tok, uid, "\u2705 <b>ROPE %s = %s</b>\n"
+                   "Ladder guna lot ini sebagai aras %s.\n"
+                   "Bot guna pada kitaran berikutnya (3s atau kurang)."
+         % (nama, x, "mula" if which == "min" else "had ganda"),
+         ROPE_BUTTONS)
 
 
 def run_ctl(arg):
@@ -486,6 +519,19 @@ def cmd_bot():
                     send(tok, uid, ("\u2705 <b>Strategy Changed</b>\n\nCurrent Strategy:\n<b>%s</b>"
                                     % STRAT.active()) if res.startswith("ditukar")
                          else ("\u26d4 %s" % res), BUTTONS)
+                continue
+            # -------------------------------------------------------------
+            # ---- /ropec <min> [max] | /ropelot <min> [max] --------------
+            if not cq and txt.startswith(("/ropec", "/ropelot", "/rope")):
+                parts = raw_txt.split()
+                if len(parts) == 1:
+                    send(tok, uid, "<pre>%s</pre>" % run_ctl("status").replace("<", "&lt;"),
+                         ROPE_BUTTONS)
+                elif len(parts) == 2:
+                    set_rope(tok, uid, "min", parts[1])
+                else:
+                    set_rope(tok, uid, "min", parts[1])
+                    set_rope(tok, uid, "max", parts[2])
                 continue
             # -------------------------------------------------------------
             # ---- /lot [peratus] -----------------------------------------
@@ -592,6 +638,18 @@ def cmd_bot():
                      RISK_BUTTONS)
             elif verb.startswith("risk:"):
                 set_risk(tok, uid, verb.split(":", 1)[1])
+            elif verb == "rope":
+                send(tok, uid, "\U0001f9f6 <b>ROPE LOT (Stop Ladder)</b>\n"
+                               "Ladder gandakan lot setiap aras (N = 2L), jadi had:\n"
+                               "  baris atas  = lot MINIMUM (lot mula)\n"
+                               "  baris bawah = lot MAKSIMUM (had ganda)\n"
+                               "Cara lain: <code>/rope 0.02 0.64</code>\n"
+                               "Bot guna pada kitaran berikutnya (3s atau kurang).",
+                     ROPE_BUTTONS)
+            elif verb.startswith("rope:"):
+                _, which, val = (verb.split(":") + ["", ""])[:3]
+                if which in ("min", "max"):
+                    set_rope(tok, uid, which, val)
             elif verb == "menu":
                 send(tok, uid, "Menu:", BUTTONS)
             elif verb in ("status", "next", "trades", "why"):
